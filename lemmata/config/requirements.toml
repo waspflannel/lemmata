@@ -1,0 +1,35 @@
+# Optional managed requirements for lemmata hosts. Install as the system
+# requirements file (`/etc/codex/requirements.toml`, or
+# `%ProgramData%\OpenAI\Codex\requirements.toml` on Windows) so later config
+# layers cannot turn these back on. Web search stays allowed here because the
+# lemmata-research profile needs it; the prover profile disables it itself.
+
+allowed_login_methods = ["chatgpt"]
+allowed_approval_policies = ["never"]
+allowed_sandbox_modes = ["read-only"]
+allowed_web_search_modes = ["disabled", "live"]
+check_for_update_on_startup = false
+allow_browser_and_computer_use = false
+allow_remote_control = false
+
+[feedback]
+enabled = false
+
+[features]
+shell_tool = false
+unified_exec = false
+shell_snapshot = false
+image_generation = false
+view_image = false
+browser_use = false
+computer_use = false
+code_mode = false
+plugins = false
+tool_suggest = false
+apps = false
+guardianv2 = false
+guardianv3 = false
+multi_agent = false
+multi_agent_v2 = false
+memories = false
+goals = false

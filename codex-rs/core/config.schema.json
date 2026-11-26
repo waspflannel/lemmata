@@ -2918,6 +2918,30 @@
     "LegacyAppPathString": {
       "type": "string"
     },
+    "LemmataToml": {
+      "additionalProperties": false,
+      "description": "`[lemmata]` table in `config.toml`.",
+      "properties": {
+        "allowed_tools": {
+          "description": "Hard tool allowlist used in lemmata mode. Entries are `name` or `namespace/name` (for example `mcp__lemmata/lean_check` or `web/run`). Missing means no tools.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "default": false,
+          "description": "The single fork switch. When true, app-server skips non-math extensions and every thread gets a hard tool allowlist.",
+          "type": "boolean"
+        },
+        "research": {
+          "default": false,
+          "description": "Research role: lets the web search extension install. Only honored in lemmata mode.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "MarketplaceConfig": {
       "additionalProperties": false,
       "properties": {
@@ -9066,6 +9090,14 @@
     "instructions": {
       "description": "System instructions.",
       "type": "string"
+    },
+    "lemmata": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/LemmataToml"
+        }
+      ],
+      "description": "Fork-only lemmata shell settings (math-only mode and hard tool allowlist)."
     },
     "log_dir": {
       "allOf": [
