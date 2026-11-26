@@ -23,6 +23,8 @@ mod hook_config;
 mod host_name;
 mod in_app_browser_requirements;
 mod key_aliases;
+mod lemmata;
+pub use lemmata::LemmataToml;
 pub mod loader;
 mod marketplace_edit;
 mod mcp_edit;

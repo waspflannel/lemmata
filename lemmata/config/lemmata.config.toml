@@ -1,0 +1,187 @@
+# lemmata prover/refuter profile.
+#
+# Copy this file, lemmata-math.md and (optionally) requirements.toml into a
+# dedicated CODEX_HOME, then run `codex --profile lemmata ...`. See lemmata/README.md.
+# This file is self-contained: it does not rely on anything in config.toml.
+
+# --- Model, auth, instructions --------------------------------------------------
+model_provider = "openai"
+forced_login_method = "chatgpt"
+# Resolved relative to this file.
+model_instructions_file = "lemmata-math.md"
+project_doc_max_bytes = 0
+include_permissions_instructions = false
+include_apps_instructions = false
+include_collaboration_mode_instructions = false
+include_environment_context = false
+
+# --- No side effects ------------------------------------------------------------
+approval_policy = "never"
+sandbox_mode = "read-only"
+web_search = "disabled"
+check_for_update_on_startup = false
+
+# --- Fork switch (lemmata patches) --------------------------------------------
+[lemmata]
+# The single fork-only switch. Gates non-math extensions in app-server and turns
+# on the hard tool allowlist below. Entries are `name` or `namespace/name`.
+# MCP tools live in the `mcp__<server>` namespace. The tool names are provisional
+# until the math servers exist; confirm them with `codex debug prompt-input`.
+mode = true
+research = false
+allowed_tools = [
+  "mcp__lean/check",
+  "mcp__lean/search_mathlib",
+  "mcp__brute_force/run",
+  "mcp__smt/solve",
+  "mcp__cas/eval",
+  "mcp__oeis/search",
+  "mcp__whiteboard/read",
+  "mcp__whiteboard/write",
+  "mcp__submit_verdict/submit_verdict",
+]
+
+# Model-side multi-agent: the model catalog picks multi-agent v2 unless this is off.
+[agents]
+enabled = false
+
+[skills]
+include_instructions = false
+
+[skills.bundled]
+enabled = false
+
+[analytics]
+enabled = false
+
+[feedback]
+enabled = false
+
+[otel]
+metrics_exporter = "none"
+log_user_prompt = false
+
+[features]
+# Shell / exec / unified exec / shell snapshot.
+# apply_patch and git attribution have no flag: the allowlist, the read-only
+# sandbox and the lemmata extension gate keep them out.
+shell_tool = false
+unified_exec = false
+unified_exec_tty = false
+shell_snapshot = false
+shell_snapshot_v2 = false
+exec_permission_approvals = false
+write_stdin_approval = false
+request_permissions_tool = false
+# Web search (only the lemmata-research profile turns it back on)
+web_search_indexed_default = false
+standalone_web_search = false
+# Images
+image_generation = false
+defer_image_generation = false
+image_generation_animation = false
+view_image = false
+# Browser / computer use
+in_app_browser = false
+browser_annotation_api = false
+browser_use = false
+browser_use_full_cdp_access = false
+browser_use_external = false
+computer_use = false
+# Code mode
+code_mode = false
+code_mode_host = false
+code_mode_only = false
+# Plugins / marketplace / tool suggest
+plugins = false
+remote_plugin = false
+plugin_sharing = false
+recommended_plugins = false
+tool_suggest = false
+# Apps / connectors
+apps = false
+enable_mcp_apps = false
+catalog_apps_instructions = false
+apps_early_resource_discovery = false
+codex_apps_mcp_2026_07_28 = false
+psp = false
+# Skills
+skill_mcp_dependency_install = false
+# Guardian / code review
+guardian_approval = false
+guardianv2 = false
+guardianv3 = false
+# Model-side multi-agent
+multi_agent = false
+multi_agent_v2 = false
+agent_message_board = false
+agent_message_board_mcp = false
+wake_on_agent_messages = false
+# Memories
+memories = false
+external_agent_memory_import = false
+# Goals and other non-math helpers
+goals = false
+sleep_tool = false
+current_time_reminder = false
+default_mode_request_user_input = false
+send_message_to_user_async = false
+chronicle = false
+artifact = false
+# Environments / sandbox services
+multi_env_copy_file = false
+deferred_executor = false
+windows_sandbox_service = false
+prefer_mxc = false
+network_proxy = false
+# Telemetry / analytics
+statsig_gates = false
+analytics_plan_history = false
+runtime_metrics = false
+# Updates
+in_app_updates = false
+daemon_updates = false
+daemon_auto_start = false
+# Cloud / realtime / remote control / desktop surfaces
+realtime_frames_local = false
+in_app_voice = false
+in_app_dictation = false
+in_app_chat = false
+in_app_local_automation = false
+bedrock_setup_wizard = false
+gcp_setup_wizard = false
+gateway_setup_wizard = false
+cli_daybreak = false
+api_key_cyber_access_programs = false
+daybreak_program_propagation = false
+
+# --- Future math tools (placeholders; uncomment once the servers exist) ----------
+# Each server should also set `enabled_tools` to its allowlisted tool names.
+#
+# [mcp_servers.lean]
+# command = "lemmata-lean-mcp"          # Lean 4 + Mathlib check / search
+# enabled_tools = ["check", "search_mathlib"]
+#
+# [mcp_servers.brute_force]
+# command = "lemmata-brute-force-mcp"   # own sandbox, time and memory limits
+# enabled_tools = ["run"]
+#
+# [mcp_servers.smt]
+# command = "lemmata-smt-mcp"           # Z3
+# enabled_tools = ["solve"]
+#
+# [mcp_servers.cas]
+# command = "lemmata-cas-mcp"           # SymPy / Sage
+# enabled_tools = ["eval"]
+#
+# [mcp_servers.oeis]
+# command = "lemmata-oeis-mcp"
+# enabled_tools = ["search"]
+#
+# [mcp_servers.whiteboard]
+# command = "lemmata-whiteboard-mcp"    # shared state across worker threads
+# enabled_tools = ["read", "write"]
+#
+# [mcp_servers.submit_verdict]
+# command = "lemmata-verdict-mcp"       # validates certificates server-side
+# enabled_tools = ["submit_verdict"]

@@ -270,6 +270,9 @@ pub struct ConfigToml {
     /// Whether to inject the `<apps_instructions>` developer block.
     pub include_apps_instructions: Option<bool>,
 
+    /// Fork-only lemmata shell settings (math-only mode and hard tool allowlist).
+    pub lemmata: Option<crate::LemmataToml>,
+
     /// Whether to inject the `<collaboration_mode>` developer block.
     pub include_collaboration_mode_instructions: Option<bool>,
 

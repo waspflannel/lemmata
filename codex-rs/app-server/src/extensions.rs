@@ -71,6 +71,8 @@ pub(crate) fn thread_extensions(
         queue_service,
         turn_start_admission,
     } = dependencies;
+    // lemmata fork: math-only threads skip every non-math extension (see lemmata/README.md).
+    let installs_non_math = !config.lemmata.mode;
     let mut builder = ExtensionRegistryBuilder::<Config>::with_event_sink(Arc::clone(&event_sink));
     builder.thread_lifecycle_contributor(Arc::new(thread_state_manager));
     if config
@@ -85,66 +87,75 @@ pub(crate) fn thread_extensions(
     if let Some(queue_service) = queue_service {
         codex_queue_extension::install(&mut builder, queue_service);
     }
-    codex_history_notes_extension::install(&mut builder, auth_manager.clone());
-    crate::install_agent_message_board(&mut builder, thread_manager.clone());
-    if let Some(state_db) = state_db {
-        codex_goal_extension::install_with_backend(
+    if installs_non_math {
+        codex_history_notes_extension::install(&mut builder, auth_manager.clone());
+        crate::install_agent_message_board(&mut builder, thread_manager.clone());
+        if let Some(state_db) = state_db {
+            codex_goal_extension::install_with_backend(
+                &mut builder,
+                state_db,
+                analytics_events_client,
+                codex_otel::global(),
+                thread_manager.clone(),
+                goal_service,
+                |config: &Config| GoalExtensionConfig {
+                    enabled: config.features.enabled(codex_features::Feature::Goals),
+                    max_goal_token_budget: config.max_goal_token_budget,
+                },
+            );
+        }
+        codex_git_attribution::install(
             &mut builder,
-            state_db,
-            analytics_events_client,
-            codex_otel::global(),
-            thread_manager.clone(),
-            goal_service,
-            |config: &Config| GoalExtensionConfig {
-                enabled: config.features.enabled(codex_features::Feature::Goals),
-                max_goal_token_budget: config.max_goal_token_budget,
+            auth_manager.clone(),
+            git_attribution_base_url,
+            http_client_factory,
+        );
+        let board_manager = thread_manager.clone();
+        let board_host = move |root| {
+            codex_agent_message_board_host::local_board_host(board_manager.clone(), root)
+        };
+        if config.features.enabled(codex_features::Feature::GuardianV3) {
+            codex_guardian_v3::install(&mut builder, thread_manager.clone(), config, board_host);
+        } else {
+            codex_guardian_v3::install_shadow(&mut builder, thread_manager.clone(), board_host);
+        }
+        codex_guardian_v2::install(&mut builder, auth_manager.clone(), thread_manager);
+        codex_memories_extension::install(&mut builder, codex_otel::global());
+    }
+    codex_mcp_extension::install(&mut builder);
+    if installs_non_math {
+        codex_mcp_extension::install_plugins(&mut builder, environment_manager);
+    }
+    if config.lemmata.allows_web_search() {
+        codex_web_search_extension::install(&mut builder, auth_manager.clone());
+    }
+    if installs_non_math {
+        codex_image_generation_extension::install(&mut builder, auth_manager, |config: &Config| {
+            Some(config.codex_home.clone())
+        });
+        let mut skill_providers = codex_skills_extension::SkillProviders::new()
+            .with_executor_provider(executor_skill_provider)
+            .with_host_provider(Arc::new(codex_skills_extension::HostSkillProvider::new()));
+        if let Some(provider) = cloud_skill_provider {
+            skill_providers = skill_providers.with_cloud_provider(provider);
+        }
+        codex_skills_extension::install_with_providers(
+            &mut builder,
+            skill_providers,
+            |config: &Config| codex_skills_extension::SkillsExtensionConfig {
+                include_instructions: config.include_skill_instructions,
+                catalog_deltas_enabled: config
+                    .features
+                    .enabled(codex_features::Feature::SkillCatalogDeltas),
+                omit_descriptions: config
+                    .features
+                    .enabled(codex_features::Feature::OmitSkillDescriptions),
+                max_context_tokens: config.skill_max_context_tokens,
+                bundled_skills_enabled: config.bundled_skills_enabled(),
+                cloud_skill_enabled: config.cloud_skill_enabled,
             },
         );
     }
-    codex_git_attribution::install(
-        &mut builder,
-        auth_manager.clone(),
-        git_attribution_base_url,
-        http_client_factory,
-    );
-    let board_manager = thread_manager.clone();
-    let board_host =
-        move |root| codex_agent_message_board_host::local_board_host(board_manager.clone(), root);
-    if config.features.enabled(codex_features::Feature::GuardianV3) {
-        codex_guardian_v3::install(&mut builder, thread_manager.clone(), config, board_host);
-    } else {
-        codex_guardian_v3::install_shadow(&mut builder, thread_manager.clone(), board_host);
-    }
-    codex_guardian_v2::install(&mut builder, auth_manager.clone(), thread_manager);
-    codex_memories_extension::install(&mut builder, codex_otel::global());
-    codex_mcp_extension::install(&mut builder);
-    codex_mcp_extension::install_plugins(&mut builder, environment_manager);
-    codex_web_search_extension::install(&mut builder, auth_manager.clone());
-    codex_image_generation_extension::install(&mut builder, auth_manager, |config: &Config| {
-        Some(config.codex_home.clone())
-    });
-    let mut skill_providers = codex_skills_extension::SkillProviders::new()
-        .with_executor_provider(executor_skill_provider)
-        .with_host_provider(Arc::new(codex_skills_extension::HostSkillProvider::new()));
-    if let Some(provider) = cloud_skill_provider {
-        skill_providers = skill_providers.with_cloud_provider(provider);
-    }
-    codex_skills_extension::install_with_providers(
-        &mut builder,
-        skill_providers,
-        |config: &Config| codex_skills_extension::SkillsExtensionConfig {
-            include_instructions: config.include_skill_instructions,
-            catalog_deltas_enabled: config
-                .features
-                .enabled(codex_features::Feature::SkillCatalogDeltas),
-            omit_descriptions: config
-                .features
-                .enabled(codex_features::Feature::OmitSkillDescriptions),
-            max_context_tokens: config.skill_max_context_tokens,
-            bundled_skills_enabled: config.bundled_skills_enabled(),
-            cloud_skill_enabled: config.cloud_skill_enabled,
-        },
-    );
     builder.model_request_contributor(sample_responses);
     Arc::new(builder.build())
 }

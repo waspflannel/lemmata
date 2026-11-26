@@ -797,6 +797,9 @@ pub struct Config {
     /// Whether to inject the `<apps_instructions>` developer block.
     pub include_apps_instructions: bool,
 
+    /// Fork-only lemmata shell settings from `[lemmata]`.
+    pub lemmata: codex_config::LemmataToml,
+
     /// Whether to inject the `<collaboration_mode>` developer block.
     pub include_collaboration_mode_instructions: bool,
 
@@ -4817,6 +4820,7 @@ impl Config {
             compact_prompt,
             include_permissions_instructions,
             include_apps_instructions,
+            lemmata: cfg.lemmata.unwrap_or_default(),
             include_collaboration_mode_instructions,
             include_skill_instructions,
             skill_max_context_tokens,
