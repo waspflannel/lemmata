@@ -18,10 +18,13 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
+from fractions import Fraction
 from typing import Any
 
 ENUMERATOR_VERSION = "lemmata-enumerate/1"
 GRAPH_VERSION = "lemmata-geng/1"
+ANNEAL_VERSION = "lemmata-anneal/1"
+MINE_VERSION = "lemmata-txgraffiti/1"
 SPOT_CHECK_POINTS = 5000
 SHRINK_EVALS = 2000
 
@@ -282,7 +285,10 @@ def graph_job(job: dict[str, Any]) -> dict[str, Any]:
 
     ns = _load(job["predicate"])
     deadline = time.monotonic() + job["timeout"]
-    cmd = [job["geng"], "-q", *job["flags"], str(job["n"]), f"{job['res']}/{job['mod']}"]
+    if job.get("file"):  # a graph6 list downloaded by hand (e.g. from House of Graphs)
+        cmd = ["cat", job["file"]]
+    else:
+        cmd = [job["geng"], "-q", *job["flags"], str(job["n"]), f"{job['res']}/{job['mod']}"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
     assert proc.stdout is not None
 
@@ -296,7 +302,9 @@ def graph_job(job: dict[str, Any]) -> dict[str, Any]:
         if evaluated % 64 == 0 and time.monotonic() > deadline:
             outcome = "timed_out"
             break
-        g6 = line.strip()
+        g6 = line.strip().removeprefix(">>graph6<<")
+        if not g6:
+            continue
         graph = nx.from_graph6_bytes(g6.encode())
         evaluated += 1
         try:
@@ -371,9 +379,316 @@ def flint_job(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# --- integer relations (mpmath PSLQ) -----------------------------------------------------
+
+
+def pslq_job(job: dict[str, Any]) -> dict[str, Any]:
+    import mpmath
+
+    def values(dps: int) -> list[Any]:
+        mpmath.mp.dps = dps
+        namespace = {k: getattr(mpmath, k) for k in dir(mpmath) if not k.startswith("_")}
+        exec(job.get("setup", ""), namespace)
+        return [mpmath.mpf(eval(e, namespace)) for e in job["exprs"]]
+
+    xs = values(job["dps"])
+    relation = mpmath.pslq(xs, maxcoeff=job["max_coeff"], maxsteps=job["max_steps"])
+    if relation is None:
+        return {"relation": None, "note": f"no relation with |coefficients| <= {job['max_coeff']}"}
+    residual = mpmath.fsum(c * x for c, x in zip(relation, xs, strict=True))
+    # A true relation keeps vanishing as precision grows; a numerical accident does not.
+    check = mpmath.fsum(c * x for c, x in zip(relation, values(2 * job["dps"]), strict=True))
+    return {
+        "relation": [int(c) for c in relation],
+        "residual": mpmath.nstr(residual, 5),
+        "residual_at_double_precision": mpmath.nstr(check, 5),
+        "note": "numerical candidate only: prove the identity (Lean, exact algebra) before use",
+    }
+
+
+# --- local search / simulated annealing ---------------------------------------------------
+
+
+class _GraphSpace:
+    """Graphs on n vertices; a move toggles one edge."""
+
+    def __init__(self, job: dict[str, Any], rng: random.Random) -> None:
+        import networkx as nx
+
+        self.nx, self.rng, self.job = nx, rng, job
+        self.pairs = list(itertools.combinations(range(job["n"]), 2))
+
+    def start(self) -> Any:
+        return self.nx.gnp_random_graph(
+            self.job["n"], self.job["edge_p"], seed=self.rng.randrange(2**32)
+        )
+
+    def move(self, g: Any) -> Any:
+        h = g.copy()
+        u, v = self.rng.choice(self.pairs)
+        if h.has_edge(u, v):
+            h.remove_edge(u, v)
+        else:
+            h.add_edge(u, v)
+        return h
+
+    def args(self, g: Any) -> dict[str, Any]:
+        return {"G": g}
+
+    def show(self, g: Any) -> dict[str, Any]:
+        return {"graph6": self.nx.to_graph6_bytes(g, header=False).decode().strip()}
+
+
+class _IntSpace:
+    """Integer tuples in the variables' domains (clipped to ±max_abs); a move changes one
+    coordinate by a small or a tenth-of-range step."""
+
+    def __init__(self, job: dict[str, Any], rng: random.Random) -> None:
+        self.rng = rng
+        self.names = [v["name"] for v in job["variables"]]
+        self.bounds = []
+        for var in job["variables"]:
+            lo, hi = _bounds(var)
+            self.bounds.append((int(max(lo, -job["max_abs"])), int(min(hi, job["max_abs"]))))
+
+    def start(self) -> Any:
+        return tuple(self.rng.randint(lo, hi) for lo, hi in self.bounds)
+
+    def move(self, x: Any) -> Any:
+        i = self.rng.randrange(len(x))
+        lo, hi = self.bounds[i]
+        jump = self.rng.choice([1, 1, 2, max(1, (hi - lo) // 10)]) * self.rng.choice([-1, 1])
+        return (*x[:i], min(hi, max(lo, x[i] + jump)), *x[i + 1 :])
+
+    def args(self, x: Any) -> dict[str, Any]:
+        return dict(zip(self.names, x, strict=True))
+
+    def show(self, x: Any) -> dict[str, Any]:
+        return self.args(x)
+
+
+def local_search_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Minimize the worker's score(...) by annealing; stop at the first counterexample."""
+    ns = _load(job["predicate"])
+    if not callable(ns.get("score")):
+        raise ValueError("predicate must also define score(...): lower is closer to a witness")
+    rng = random.Random(job["seed"])
+    deadline = time.monotonic() + job["timeout"]
+    space = _GraphSpace(job, rng) if job.get("n") else _IntSpace(job, rng)
+    start, move, args, show = space.start, space.move, space.args, space.show
+
+    evaluated = errors = 0
+
+    def evaluate(x: Any) -> tuple[float, bool]:
+        nonlocal evaluated, errors
+        evaluated += 1
+        try:
+            return float(ns["score"](**args(x))), _counterexample(ns, args(x))
+        except Exception:
+            errors += 1
+            return INF, False
+
+    best, best_score, outcome = None, INF, "no_witness_found"
+    for _ in range(job["restarts"]):
+        x = start()
+        score, hit = evaluate(x)
+        for t in range(job["steps"]):
+            if hit or time.monotonic() > deadline:
+                break
+            temperature = job["temperature"] * (1 - t / job["steps"]) + 1e-12
+            y = move(x)
+            y_score, y_hit = evaluate(y)
+            if (
+                y_hit
+                or y_score <= score
+                or rng.random() < math.exp((score - y_score) / temperature)
+            ):
+                x, score, hit = y, y_score, y_hit
+            if score < best_score:
+                best, best_score = x, score
+        if hit:
+            return {
+                "outcome": "lemma_refuted",
+                "witnesses": [show(x)],
+                "evaluated": evaluated,
+                "errors": errors,
+                "generator_version": ANNEAL_VERSION,
+            }
+        if time.monotonic() > deadline:
+            outcome = "timed_out"
+            break
+    return {
+        "outcome": outcome,
+        "witnesses": [],
+        "best": {"point": show(best), "score": best_score} if best is not None else None,
+        "evaluated": evaluated,
+        "errors": errors,
+        "generator_version": ANNEAL_VERSION,
+        "note": "random search: finding nothing says nothing about the domain",
+    }
+
+
+# --- TxGraffiti-style conjecture mining ---------------------------------------------------
+
+
+def _hull_lines(
+    points: list[tuple[Fraction, Fraction]], upper: bool
+) -> list[tuple[Fraction, Fraction]]:
+    """(slope, intercept) of each edge of the lower (or upper) convex hull: every such line
+    bounds all points from below (above) and touches at least two."""
+    sign = -1 if upper else 1
+    extreme: dict[Fraction, Fraction] = {}
+    for x, y in points:
+        y = sign * y
+        extreme[x] = min(extreme.get(x, y), y)
+    hull: list[tuple[Fraction, Fraction]] = []
+    for p in sorted(extreme.items()):
+        while len(hull) >= 2:
+            (ax, ay), (bx, by) = hull[-2], hull[-1]
+            if (bx - ax) * (p[1] - ay) - (by - ay) * (p[0] - ax) <= 0:
+                hull.pop()
+            else:
+                break
+        hull.append(p)
+    lines = []
+    for (ax, ay), (bx, by) in itertools.pairwise(hull):
+        slope = (by - ay) / (bx - ax)
+        lines.append((sign * slope, sign * (ay - slope * ax)))
+    return lines
+
+
+def _linear(slope: Fraction, intercept: Fraction, name: str) -> str:
+    term = name if slope == 1 else f"{slope}*{name}"
+    if slope == 0:
+        return str(intercept)
+    if intercept == 0:
+        return term
+    return f"{term} {'+' if intercept > 0 else '-'} {abs(intercept)}"
+
+
+def mine_job(job: dict[str, Any]) -> dict[str, Any]:
+    import inspect
+
+    namespace: dict[str, Any] = {}
+    exec(compile(job["invariants"], "<invariants>", "exec"), namespace)
+    # Only functions defined in the invariants code itself (not imported ones, not _helpers).
+    invariants = {
+        k: f
+        for k, f in namespace.items()
+        if inspect.isfunction(f)
+        and not k.startswith("_")
+        and f.__code__.co_filename == "<invariants>"
+    }
+    target = job["target"]
+    if target not in invariants:
+        raise ValueError(f"target {target!r} is not one of the invariants {sorted(invariants)}")
+    deadline = time.monotonic() + job["timeout"]
+
+    def objects() -> Iterator[tuple[str, dict[str, Any]]]:
+        if job["objects"] == "graphs":
+            import networkx as nx
+
+            for n in range(job["n_min"], job["n_max"] + 1):
+                cmd = [job["geng"], "-q", *job["flags"], str(n)]
+                with subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True) as proc:
+                    assert proc.stdout is not None
+                    for line in proc.stdout:
+                        g6 = line.strip()
+                        yield g6, {"G": nx.from_graph6_bytes(g6.encode())}
+        else:
+            for k in range(job["int_min"], job["int_max"] + 1):
+                yield str(k), {"n": k}
+
+    rows: list[tuple[str, dict[str, Fraction]]] = []
+    skipped, first_error = 0, None
+    for label, kwargs in objects():
+        if len(rows) >= job["max_objects"] or time.monotonic() > deadline:
+            break
+        try:
+            values = {name: Fraction(f(**kwargs)) for name, f in invariants.items()}
+        except Exception as e:  # undefined or non-numeric somewhere: the object is left out
+            skipped += 1
+            first_error = first_error or {"object": label, "error": repr(e)}
+            continue
+        rows.append((label, values))
+
+    candidates = []
+    for feature in invariants:
+        if feature == target:
+            continue
+        points = [(v[feature], v[target]) for _, v in rows]
+        for upper in (False, True):
+            for slope, intercept in _hull_lines(points, upper):
+                bound = [slope * v[feature] + intercept for _, v in rows]
+                sharp = [label for (label, v), b in zip(rows, bound, strict=True) if v[target] == b]
+                relation = "<=" if upper else ">="
+                candidates.append(
+                    {
+                        "statement": f"{target} {relation} {_linear(slope, intercept, feature)}",
+                        "upper": upper,
+                        "touch": len(sharp),
+                        "sharp_examples": sharp[:3],
+                        "_bound": bound,
+                    }
+                )
+    # Dalmatian heuristic: keep a conjecture only if it is strictly sharper than every kept
+    # one (same direction) on at least one object.
+    candidates.sort(key=lambda c: -c["touch"])
+    kept: list[dict[str, Any]] = []
+    for c in candidates:
+        rivals = [k["_bound"] for k in kept if k["upper"] == c["upper"]]
+        better = (lambda a, b: a < b) if c["upper"] else (lambda a, b: a > b)
+        if not rivals or any(
+            all(better(b, r[i]) for r in rivals) for i, b in enumerate(c["_bound"])
+        ):
+            kept.append(c)
+        if len(kept) >= job["top"]:
+            break
+    return {
+        "objects": len(rows),
+        "skipped_objects": skipped,
+        "first_error": first_error,
+        "conjectures": [{k: v for k, v in c.items() if k != "_bound"} for c in kept],
+        "generator_version": MINE_VERSION,
+        "note": "each conjecture holds on every object tested; it is a candidate, not a theorem",
+    }
+
+
+# --- evolutionary program search (one candidate) ---------------------------------------
+
+
+def construct_job(job: dict[str, Any]) -> dict[str, Any]:
+    namespace: dict[str, Any] = {}
+    exec(compile(job["program"], "<program>", "exec"), namespace)
+    if not callable(namespace.get("construct")):
+        raise ValueError("program must define construct() returning a JSON value")
+    text = json.dumps(namespace["construct"]())
+    if len(text) > 1_000_000:
+        raise ValueError("construction is larger than 1 MB of JSON")
+    return {"object": json.loads(text)}
+
+
+def score_job(job: dict[str, Any]) -> dict[str, Any]:
+    namespace: dict[str, Any] = {}
+    exec(compile(job["evaluator"], "<evaluator>", "exec"), namespace)
+    value = float(namespace["score"](job["object"]))
+    if math.isnan(value):
+        raise ValueError("score is NaN")
+    return {"score": value}
+
+
 def main() -> None:
     job = json.loads(sys.stdin.read())
-    kinds = {"enumerate": enumerate_job, "graphs": graph_job, "flint": flint_job}
+    kinds = {
+        "enumerate": enumerate_job,
+        "graphs": graph_job,
+        "flint": flint_job,
+        "pslq": pslq_job,
+        "local_search": local_search_job,
+        "mine": mine_job,
+        "construct": construct_job,
+        "score": score_job,
+    }
     try:
         result = kinds[job["kind"]](job)
     except Exception as e:

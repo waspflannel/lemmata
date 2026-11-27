@@ -37,8 +37,10 @@ from .common import (
     STATE,
     VERIFY_PROJECT,
     base_env,
+    extra_imports,
     run,
     sandboxed,
+    scan_certificate,
     sha256,
     tool_path,
 )
@@ -46,10 +48,9 @@ from .common import (
 DB_PATH = STATE / "verdicts.db"
 VERDICTS = ("PROVED", "DISPROVED", "UNRESOLVED")
 COMPARATOR_TIMEOUT = 3600
-# Rejected before comparator runs. Comparator's axiom check catches the semantic cases too
-# (native_decide adds Lean.ofReduceBool); this gives a clear early reason.
-FORBIDDEN_SOURCE = re.compile(
-    r"\b(sorry|admit|native_decide|implemented_by|extern|unsafe|axiom|debug\.skipKernelTC)\b"
+# Sandbox notices and the extra packages' build chatter, dropped from comparator's output tail.
+BUILD_NOISE = re.compile(
+    r"^\[landrun:warn\]|^⚠ \[\d+/\d+\] Replayed|designed for use with the module"
 )
 
 SCHEMA = """
@@ -115,8 +116,12 @@ def _prefix(c: dict[str, Any]) -> str:
     return f"{c['preamble'].strip()}\n\ndef Claim : Prop :=\n  {c['claim'].strip()}\n"
 
 
-def _imports(*challenges: dict[str, Any]) -> str:
+def _imports(*challenges: dict[str, Any], solution: bool = False) -> str:
+    """Import block. A solution also imports the verification project's extra packages
+    (LeanHammer, LeanCert): the same header lean.check elaborates against."""
     modules = dict.fromkeys(m for c in challenges for m in c["imports"])
+    if solution:
+        modules |= dict.fromkeys(extra_imports(VERIFY_PROJECT))
     return "\n".join(f"import {m}" for m in modules) + "\n\n"
 
 
@@ -199,14 +204,9 @@ def _comparator(
         "log": str(log),
         "seconds": round(time.monotonic() - started, 1),
         "output_tail": "\n".join(
-            line for line in (out + err).splitlines() if not line.startswith("[landrun:warn]")
+            line for line in (out + err).splitlines() if not BUILD_NOISE.search(line)
         )[-3000:],
     }
-
-
-def _scan(proof: str) -> str | None:
-    match = FORBIDDEN_SOURCE.search(re.sub(r"--.*|/-(?:.|\n)*?-/", "", proof))
-    return f"forbidden in a certificate: `{match.group(1)}`" if match else None
 
 
 # --- independent witness replay -------------------------------------------------------------
@@ -235,6 +235,11 @@ def convert(var, raw):
         if not all(isinstance(x, int) and not isinstance(x, bool) for x in raw):
             raise ValueError(f"{var['name']}: list of integers expected")
         value = list(raw)
+    elif kind == "list[list[int]]":  # operation tables and matrices (Mace4, GAP)
+        if not all(isinstance(row, list) and all(isinstance(x, int) and not isinstance(x, bool)
+                                                  for x in row) for row in raw):
+            raise ValueError(f"{var['name']}: list of integer lists expected")
+        value = [list(row) for row in raw]
     elif kind == "graph6":
         import networkx
         value = networkx.from_graph6_bytes(str(raw).encode())
@@ -314,7 +319,8 @@ def freeze_statement(
 
     claim: a Lean Prop, e.g. `∀ n : ℕ, 0 < n → n ^ 2 ≥ n`; preamble: Lean definitions it uses.
     predicate/variables: exact Python `hypotheses(**v)` / `conclusion(**v)` over typed
-    variables (int, nat, pos, rat, bool, list[int], graph6), used to replay witnesses.
+    variables (int, nat, pos, rat, bool, list[int], list[list[int]], graph6), used to replay
+    witnesses.
     """
     c = {
         "title": title,
@@ -426,13 +432,13 @@ def check_equivalence(challenge_id: str, second_id: str, proof: str) -> dict[str
     first, second = _challenge(challenge_id), _challenge(second_id)
     if second["second_of"] != challenge_id:
         raise ValueError(f"{second_id} was not frozen as a second formalization of {challenge_id}")
-    prefix = _imports(first, second) + _pair_prefix(first, second)
-    if reason := _scan(proof):
+    pair = _pair_prefix(first, second)
+    prefix = _imports(first, second) + pair
+    if reason := scan_certificate(proof):
         return {"passed": False, "reason": reason, "lean_prefix": prefix}
     challenge_src = prefix + "\ntheorem claim_equiv : F1.Claim ↔ F2.Claim := sorry\n"
-    result = _comparator(
-        challenge_src, prefix + "\n" + proof, ["claim_equiv"], f"equiv-{challenge_id}"
-    )
+    solution_src = _imports(first, second, solution=True) + pair + "\n" + proof
+    result = _comparator(challenge_src, solution_src, ["claim_equiv"], f"equiv-{challenge_id}")
     if result["passed"]:
         connect().execute(
             "INSERT INTO equivalences (challenge_id, second_id, proof_sha, log, checked_at)"
@@ -477,10 +483,10 @@ def submit_verdict(
         ).fetchone()
         if verdict == "PROVED" and c["require_equivalence"] and not has_equivalence:
             reason = "this challenge needs a checked second-formalization equivalence first"
-        elif scan := _scan(proof):
+        elif scan := scan_certificate(proof):
             reason = scan
         else:
-            prefix = _imports(c) + _prefix(c)
+            prefix = _imports(c, solution=True) + _prefix(c)
             details = _comparator(
                 _challenge_file(c), prefix + "\n" + proof, [theorem], challenge_id
             )

@@ -6,6 +6,10 @@
   `decl_info` adds import and revision to its hits.
 - Formal Conjectures (pinned commit), searched as source text.
 - OEIS: local stripped/names data if downloaded, otherwise oeis.org over HTTP.
+- pi-Base (pinned commit, local): topological spaces, properties and theorems, with
+  forward-chaining deduction for counterexample lookup.
+- LMFDB: the read-only HTTP API. Network, so allowlisted in the research profile only.
+Everything here is a candidate source: a hit is a lead or a citation, never a certificate.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import yaml
 from mcp.server.mcpserver import MCPServer
 
 from . import board
@@ -28,11 +33,14 @@ from .common import HOME, INDEX_DB, PINS, WORK_PROJECT
 
 FORMAL_CONJECTURES = HOME / "formal-conjectures"
 OEIS_DIR = HOME / "oeis"
+PI_BASE = HOME / "pi-base"
+LMFDB_API = "https://www.lmfdb.org/api"
 
 server = MCPServer(
     "lemmata-library",
-    instructions="Search Mathlib declarations, project lemmas, Formal Conjectures and the "
-    "OEIS. For type-pattern queries use lean_lsp's lean_loogle, then decl_info here.",
+    instructions="Search Mathlib declarations, project lemmas, Formal Conjectures, the OEIS, "
+    "pi-Base and (research role) the LMFDB. For type-pattern queries use lean_lsp's "
+    "lean_loogle, then decl_info here. Hits are leads and citations, not certificates.",
 )
 
 
@@ -261,3 +269,181 @@ def oeis(query: str, limit: int = 10) -> dict[str, Any]:
         for k in ids[:limit]
     ]
     return {"source": "local", "total": len(ids), "results": results}
+
+
+# --- pi-Base -------------------------------------------------------------------------------
+
+
+def _frontmatter(path: Path) -> tuple[dict[str, Any], str]:
+    _, head, body = path.read_text(encoding="utf-8").split("---", 2)
+    return yaml.safe_load(head) or {}, body.strip()
+
+
+@functools.cache
+def _pi_base() -> dict[str, Any]:
+    if not PI_BASE.exists():
+        raise RuntimeError("pi-base data missing; run setup-wsl.sh pi_base")
+    properties, spaces, traits = {}, {}, {}
+    for path in sorted((PI_BASE / "properties").glob("*.md")):
+        meta, body = _frontmatter(path)
+        properties[meta["uid"]] = {
+            "name": meta["name"],
+            "aliases": meta.get("aliases") or [],
+            "description": body[:1500],
+        }
+    for directory in sorted((PI_BASE / "spaces").iterdir()):
+        meta, body = _frontmatter(directory / "README.md")
+        uid = meta["uid"]
+        spaces[uid] = {
+            "name": meta["name"],
+            "aliases": meta.get("aliases") or [],
+            "description": body[:1500],
+        }
+        traits[uid] = {
+            m["property"]: bool(m["value"])
+            for m, _ in map(_frontmatter, (directory / "properties").glob("*.md"))
+        }
+    theorems = []
+    for path in sorted((PI_BASE / "theorems").glob("*.md")):
+        meta, body = _frontmatter(path)
+        theorems.append(
+            {"id": meta["uid"], "if": meta["if"], "then": meta["then"], "note": body[:500]}
+        )
+    revision = subprocess.run(
+        ["git", "-C", str(PI_BASE), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    return {"properties": properties, "spaces": spaces, "traits": traits, "theorems": theorems,
+            "revision": revision}  # fmt: skip
+
+
+def _value(formula: dict[str, Any], known: dict[str, bool]) -> bool | None:
+    """Three-valued truth of a pi-Base formula ({P: bool}, {and: [...]}, {or: [...]})."""
+    if "and" in formula or "or" in formula:
+        values = [_value(f, known) for f in formula.get("and") or formula["or"]]
+        if "and" in formula:
+            return False if False in values else True if all(values) else None
+        return True if True in values else False if all(v is False for v in values) else None
+    ((prop, value),) = formula.items()
+    return None if prop not in known else known[prop] == value
+
+
+def _literals(formula: dict[str, Any]) -> list[tuple[str, bool]] | None:
+    if "or" in formula:
+        return None
+    if "and" in formula:
+        parts = [_literals(f) for f in formula["and"]]
+        return None if None in parts else [lit for part in parts if part for lit in part]
+    return [next(iter(formula.items()))]
+
+
+@functools.cache
+def _deduced(space: str) -> dict[str, bool]:
+    """Asserted traits closed under the theorems and their contrapositives."""
+    data = _pi_base()
+    known = dict(data["traits"][space])
+    changed = True
+    while changed:
+        changed = False
+        for theorem in data["theorems"]:
+            if _value(theorem["if"], known) is True:
+                new = [(p, v) for p, v in _literals(theorem["then"]) or [] if p not in known]
+            elif _value(theorem["then"], known) is False and (lits := _literals(theorem["if"])):
+                open_ = [(p, v) for p, v in lits if p not in known]
+                rest_hold = all(known.get(p) == v for p, v in lits if p in known)
+                new = [(open_[0][0], not open_[0][1])] if len(open_) == 1 and rest_hold else []
+            else:
+                new = []
+            for prop, value in new:
+                known[prop] = value
+                changed = True
+    return known
+
+
+def _property_id(key: str, properties: dict[str, Any]) -> str:
+    if key in properties:
+        return key
+    for uid, p in properties.items():
+        if key.lower() in (n.lower() for n in [p["name"], *p["aliases"]]):
+            return uid
+    raise ValueError(f"unknown pi-Base property {key!r}; search for it with `query`")
+
+
+@server.tool()
+def pi_base(
+    query: str | None = None, traits: dict[str, bool] | None = None, limit: int = 20
+) -> dict[str, Any]:
+    """pi-Base (topology), local at a pinned commit (CC BY 4.0: cite pi-Base and the refs).
+
+    `query`: words that must all appear in a space's, property's or theorem's name, aliases
+    or description. `traits`: property (id like P000016, name or alias) -> required value;
+    returns spaces having all of them, asserted by pi-Base or deduced here by forward
+    chaining over its theorems (both directions), e.g. {"Compact": true, "Metrizable":
+    false} to look for a counterexample. Deduced traits are labelled; check the reasoning
+    against pi-Base before citing it.
+    """
+    data = _pi_base()
+    out: dict[str, Any] = {"revision": data["revision"]}
+    if query:
+        words = query.lower().split()
+
+        def hit(entry: dict[str, Any]) -> bool:
+            text = " ".join([entry["name"], *entry["aliases"], entry["description"]]).lower()
+            return all(w in text for w in words)
+
+        out["properties"] = [{"id": k, **v} for k, v in data["properties"].items() if hit(v)][
+            :limit
+        ]
+        out["spaces"] = [{"id": k, **v} for k, v in data["spaces"].items() if hit(v)][:limit]
+        out["theorems"] = [
+            t for t in data["theorems"] if all(w in json.dumps(t).lower() for w in words)
+        ][:limit]
+    if traits:
+        props = data["properties"]
+        wanted = {_property_id(k, props): v for k, v in traits.items()}
+        matches = []
+        for uid, space in data["spaces"].items():
+            known = _deduced(uid)
+            if all(known.get(p) == v for p, v in wanted.items()):
+                asserted = data["traits"][uid]
+                matches.append({
+                    "id": uid,
+                    "name": space["name"],
+                    "traits": {props[p]["name"]: {"value": v, "source": "asserted" if p in asserted
+                               else "deduced"} for p, v in wanted.items()},
+                })  # fmt: skip
+        out["matching_spaces"] = matches[:limit]
+        out["total_matches"] = len(matches)
+    return out
+
+
+# --- LMFDB (research profile only: network) --------------------------------------------------
+
+
+@server.tool()
+def lmfdb(
+    collection: str,
+    query: dict[str, str] | None = None,
+    fields: list[str] | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Read-only lookup in the LMFDB API (www.lmfdb.org/api), one request per call.
+
+    collection: an API table such as ec_curvedata, ec_classdata, nf_fields, mf_newforms,
+    g2c_curves, lf_fields, artin_reps. query: field -> value in the API's typed syntax
+    (`i11` integer, `s11.a` string, `li1,2` integer list, `py[0,1]` Python literal), e.g.
+    {"conductor": "i11"}. fields: columns to return. Results carry LMFDB labels to cite;
+    LMFDB data is evidence for the whiteboard, not a certificate.
+    """
+    if not re.fullmatch(r"[a-z0-9_]+", collection):
+        raise ValueError("collection must be an LMFDB API table name")
+    if not all(re.fullmatch(r"[A-Za-z0-9_]+", f) for f in [*(fields or []), *(query or {})]):
+        raise ValueError("field names must be identifiers")
+    params = {**(query or {}), "_format": "json", "_max_count": str(min(limit, 100))}
+    if fields:
+        params["_fields"] = ",".join(fields)
+    url = f"{LMFDB_API}/{collection}/?{urllib.parse.urlencode(params)}"
+    request = urllib.request.Request(url, headers={"User-Agent": "lemmata-mcp"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        data = json.load(response)
+    rows = data.get("data", [])
+    return {"source": url, "total_returned": len(rows), "results": rows[:limit]}

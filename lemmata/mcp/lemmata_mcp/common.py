@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import resource
 import signal
 import subprocess
@@ -15,19 +16,23 @@ from typing import Any
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 
-def _load_pins() -> dict[str, str]:
-    pins: dict[str, str] = {}
-    for raw in (PACKAGE_DIR / "pins.env").read_text().splitlines():
+def _load_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
         line = raw.strip()
         if line and not line.startswith("#"):
             key, _, value = line.partition("=")
-            pins[key] = value
-    return pins
+            values[key] = value
+    return values
 
 
-PINS = _load_pins()
+PINS = _load_env(PACKAGE_DIR / "pins.env")
 
 HOME = Path(os.environ.get("LEMMATA_HOME", Path.home() / ".lemmata"))
+# Runtime switches: package defaults, overridden by $LEMMATA_HOME/options.env (setup step).
+OPTIONS = _load_env(PACKAGE_DIR / "options.env")
+if (HOME / "options.env").exists():
+    OPTIONS |= _load_env(HOME / "options.env")
 BIN = HOME / "bin"
 WORK_PROJECT = HOME / "lean"  # warm REPL, lean-lsp-mcp, scratch files
 VERIFY_PROJECT = HOME / "verify"  # read-only Mathlib used only by comparator
@@ -37,6 +42,10 @@ INDEX_DB = HOME / "index" / "decls.db"
 SAGE_PYTHON = HOME / "miniforge3" / "envs" / "sage" / "bin" / "python"
 
 STANDARD_AXIOMS = ("propext", "Classical.choice", "Quot.sound")
+# Lean packages imported next to Mathlib when a project's manifest has them: the work
+# project's set goes into the REPL header, the verification project's into every solution,
+# so what checks in the REPL is what comparator builds. setup-wsl.sh installs both together.
+EXTRA_IMPORTS = {"Hammer": "Hammer", "LeanCert": "LeanCert.Tactic"}
 # Child processes get this PATH, never the Windows PATH that WSL appends.
 CHILD_PATH = f"{BIN}:{Path.home() / '.elan' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
 
@@ -48,6 +57,46 @@ def sha256(text: str) -> str:
 def log(message: str) -> None:
     """Servers speak MCP on stdout, so diagnostics go to stderr."""
     print(f"[lemmata] {message}", file=sys.stderr, flush=True)
+
+
+# Certificate text rejected before comparator runs (and by lean.register_lemma, since proved
+# lemmas end up in certificates). Comparator's axiom check catches the semantic cases too
+# (native_decide adds Lean.ofReduceBool); this gives a clear early reason. v2: `hammer`,
+# `premises` and library suggestions would run provers or premise selection (possibly over
+# the network) inside comparator's build: a certificate carries the tactic hammer suggested.
+FORBIDDEN_SOURCE = re.compile(
+    r"\b(sorry|admit|native_decide|implemented_by|extern|unsafe|axiom|debug\.skipKernelTC"
+    r"|hammer|Hammer|premises|suggestions|LibrarySuggestions|set_library_suggestions)\b"
+)
+# LeanCert's native and auto trust modes check with native_decide (compiler in the trusted
+# base). Its default mode is native too, which comparator rejects through that axiom. Only
+# `(trust := kernel)` can certify PROVED.
+LEANCERT_NATIVE = re.compile(
+    r"trust\s*:=\s*\.?(?:native|auto)\b|leancert\.trust\s+\"(?:native|auto)\""
+)
+_COMMENTS = re.compile(r"--.*|/-(?:.|\n)*?-/")
+_STRINGS = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+
+
+def scan_certificate(source: str) -> str | None:
+    """Reason a certificate is refused, or None. Two views (comments stripped; strings blanked
+    then comments stripped), so neither `"--"` nor a quote inside a comment can hide a token."""
+    for code in (_COMMENTS.sub("", source), _COMMENTS.sub("", _STRINGS.sub('""', source))):
+        if match := FORBIDDEN_SOURCE.search(code):
+            return f"forbidden in a certificate: `{match.group(1)}`"
+        if LEANCERT_NATIVE.search(code):
+            return "LeanCert native/auto trust is exploration only; use `(trust := kernel)`"
+    return None
+
+
+def extra_imports(project: Path) -> list[str]:
+    """Modules of EXTRA_IMPORTS whose package is in `project`'s lake manifest."""
+    try:
+        manifest = json.loads((project / "lake-manifest.json").read_text())
+    except FileNotFoundError:
+        return []
+    installed = {package["name"] for package in manifest["packages"]}
+    return [module for package, module in EXTRA_IMPORTS.items() if package in installed]
 
 
 def tool_path(name: str) -> Path | None:

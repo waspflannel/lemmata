@@ -1,9 +1,11 @@
-"""Lean server: one warm REPL (`import Mathlib`) for checking, goal inspection, multi-attempt
-proof repair and a bounded tactic portfolio. Nothing here issues a verdict; PROVED goes
-through the verdict server's comparator check."""
+"""Lean server: one warm REPL (`import Mathlib`, plus LeanHammer and LeanCert when installed)
+for checking, goal inspection, proof-state branching, multi-attempt proof repair, a bounded
+tactic portfolio (Duper, hammer, LeanCert included) and batch checks (optionally on a Kimina
+pool). Nothing here issues a verdict; PROVED goes through the verdict server's comparator."""
 
 from __future__ import annotations
 
+import itertools
 import re
 import secrets
 import time
@@ -13,10 +15,11 @@ from mcp.server.mcpserver import MCPServer
 
 from . import board
 from .cas import Sage, goal_equations, ideal_cofactors
-from .common import STANDARD_AXIOMS, WORK_PROJECT
-from .repl import HEADER, Repl, ReplTimeout
+from .common import STANDARD_AXIOMS, WORK_PROJECT, scan_certificate
+from .repl import HEADER, IMPORTS, Kimina, Repl, ReplTimeout
 
 repl = Repl()
+kimina = Kimina()
 sage = Sage()
 SESSION = secrets.token_hex(4)
 
@@ -37,8 +40,27 @@ DEFAULT_PORTFOLIO = [
     "exact?",
     "apply?",
 ]
+# v2 automation, offered when its package is in the header. `hammer` (Aesop, Duper via
+# Zipperposition, grind, cvc5 in parallel; local premise selection only) is tried last and
+# counts only through the tactic it suggests: `hammer` itself is never accepted in a
+# certificate. LeanCert runs in its kernel trust mode, the only one valid for PROVED.
+if "LeanCert.Tactic" in IMPORTS:
+    DEFAULT_PORTFOLIO.insert(DEFAULT_PORTFOLIO.index("nlinarith"), "leancert (trust := kernel)")
+if "Hammer" in IMPORTS:
+    DEFAULT_PORTFOLIO.insert(DEFAULT_PORTFOLIO.index("exact?"), "duper [*]")
+    DEFAULT_PORTFOLIO.append("hammer")
 EXPLORATION_ONLY = {"native_decide"}  # never accepted in a PROVED certificate
 FORBIDDEN = {"polyrith"}  # needs the network; not available
+SUGGESTION_ONLY = {"hammer"}  # only its "Try this" suggestion may be spliced
+# Re-enabling LeanHammer's cloud premise selector (or pointing it elsewhere) would send
+# goals off the machine; the header pins the local Sine Qua Non selector instead.
+CLOUD_PREMISES = re.compile(
+    r"set_library_suggestions|premiseSelection\.apiBaseUrl|\bCloud\.premiseSelector"
+)
+# lean-smt calls cvc5 through a native library the REPL binary cannot load: the REPL aborts.
+# The header turns hammer's SMT branch off; this keeps it off and refuses `smt` itself.
+SMT = re.compile(r"\bsmt\b|disableSmt")
+BULLET = re.compile(r"\s*\[\w+\]")  # starts the next alternative in a `Try these:` list
 DECL = re.compile(
     r"^[ \t]*(?:@\[[^\]]*\][ \t\n]*)?(?:(?:private|protected|noncomputable|nonrec)\s+)*"
     r"(?:theorem|lemma|def|abbrev|instance)\s+([^\s:({\[⦃]+)",
@@ -49,11 +71,14 @@ NAMESPACE = re.compile(r"^[ \t]*(namespace|section|end)\b[ \t]*([^\s-]*)", re.MU
 server = MCPServer(
     "lemmata-lean",
     instructions=(
-        "Lean 4 + Mathlib (pinned) through one warm REPL. Code is elaborated after "
-        "`import Mathlib`; do not write imports. Use `check` to see errors, goals at each "
-        "`sorry` and the axioms of every theorem, `portfolio` to attack a `sorry`, `repair` "
-        "to fix the first failing tactic, and `register_lemma` to share a finished lemma. "
-        "native_decide is exploration only; polyrith is unavailable."
+        f"Lean 4 + Mathlib (pinned) through one warm REPL. Code is elaborated after "
+        f"`import {', '.join(IMPORTS)}`; do not write imports. Use `check` to see errors, "
+        "goals at each `sorry` and the axioms of every theorem, `portfolio` to attack a "
+        "`sorry`, `step` to branch from any proof state, `repair` to fix the first failing "
+        "tactic, `batch_check` for many independent snippets, and `register_lemma` to share "
+        "a finished lemma. native_decide and LeanCert's native/auto trust modes are "
+        "exploration only; `hammer` counts only through the tactic it suggests; polyrith is "
+        "unavailable."
     ),
 )
 
@@ -114,24 +139,35 @@ def _with_preamble(code: str, use_lemmas: list[int] | None) -> tuple[str, int]:
     return preamble + code, preamble.count("\n")
 
 
+def _parse_axioms(text: str) -> list[str] | None:
+    """Axioms from `#print axioms` output (None if the name did not resolve)."""
+    if "does not depend on any axioms" in text:
+        return []
+    if match := re.search(r"depends on axioms: \[([^\]]*)\]", text):
+        return [a.strip() for a in match.group(1).split(",") if a.strip()]
+    return None
+
+
 def _axioms(env: int, names: list[str], timeout: float) -> dict[str, list[str] | None]:
-    """Axioms per declaration via `#print axioms` (None if the name did not resolve)."""
+    """Axioms per declaration via `#print axioms`."""
     result: dict[str, list[str] | None] = {}
     for name in names:
         response = repl.command(f"#print axioms {name}", timeout, env=env)
-        text = " ".join(m["data"] for m in response.get("messages", []))
-        if "does not depend on any axioms" in text:
-            result[name] = []
-        elif match := re.search(r"depends on axioms: \[([^\]]*)\]", text):
-            result[name] = [a.strip() for a in match.group(1).split(",") if a.strip()]
-        else:
-            result[name] = None
+        result[name] = _parse_axioms(" ".join(m["data"] for m in response.get("messages", [])))
     return result
+
+
+def _guard(code: str) -> None:
+    if CLOUD_PREMISES.search(code):
+        raise ValueError("premise selection is local only; do not change the selector")
+    if SMT.search(code):
+        raise ValueError("lean-smt (cvc5) is unavailable: its native library cannot load here")
 
 
 def _check(
     code: str, use_lemmas: list[int] | None, timeout: float, all_tactics: bool = False
 ) -> dict[str, Any]:
+    _guard(code)
     full, offset = _with_preamble(code, use_lemmas)
     started = time.monotonic()
     try:
@@ -155,7 +191,8 @@ def _check(
     axioms = _axioms(response["env"], names, timeout) if not errors else {}
     bad_axioms = sorted({a for ax in axioms.values() if ax for a in ax} - set(STANDARD_AXIOMS))
     result: dict[str, Any] = {
-        "ok": not errors and not sorries and not bad_axioms,
+        # A declaration whose axioms could not be read is not known to be clean.
+        "ok": not errors and not sorries and not bad_axioms and None not in axioms.values(),
         "errors": errors,
         "warnings": [m for m in messages if m["severity"] == "warning"],
         "infos": [m for m in messages if m["severity"] == "info"],
@@ -181,10 +218,21 @@ def _closed(response: dict[str, Any]) -> bool:
 
 
 def _suggestion(response: dict[str, Any]) -> str | None:
+    """The first suggested tactic block. Lean 4.35 prints `Try this:\n  [apply] exact foo`;
+    hammer prints `Try these:` with several `[apply]` alternatives, each possibly a
+    multi-line tactic sequence (`apply h` then `simp_all only`)."""
     for m in response.get("messages", []):
-        # Lean 4.35 prints `Try this:\n  [apply] exact foo`; keep only the tactic.
-        if match := re.search(r"Try this:\s*(?:\[\w+\]\s*)?(.+)", m["data"], re.DOTALL):
-            return match.group(1).strip().split("\n")[0]
+        match = re.search(r"Try th(?:is|ese):\s*(?:\[\w+\]\s*)?(.+)", m["data"], re.DOTALL)
+        if match:
+            first, *rest = match.group(1).split("\n")
+            block = list(itertools.takewhile(lambda line: not BULLET.match(line), rest))
+            block = [line for line in block if line.strip()]
+            # Lean indents continuation lines two past the line the suggestion starts on;
+            # strip only that, so deeper (term-continuation) indentation survives.
+            opener = m["data"][: match.start(1)].rsplit("\n", 1)[-1]
+            pad = len(opener) - len(opener.lstrip()) + 2
+            pad = min([pad, *(len(line) - len(line.lstrip()) for line in block)])
+            return "\n".join([first.strip(), *(line[pad:].rstrip() for line in block)])
     return None
 
 
@@ -208,6 +256,7 @@ def _tactic_candidates(tactics: list[str] | None, goal: str) -> list[tuple[str, 
     """(label, tactic text) pairs; `linear_combination` gets CAS-proposed coefficients."""
     out = []
     for tactic in tactics or DEFAULT_PORTFOLIO:
+        _guard(tactic)
         if tactic.split()[0] in FORBIDDEN:
             continue
         if tactic == "linear_combination":
@@ -236,7 +285,8 @@ def check(
     save_as: str | None = None,
     timeout_s: int = 120,
 ) -> dict[str, Any]:
-    """Elaborate Lean code after `import Mathlib`.
+    """Elaborate Lean code after the header (`import Mathlib`, plus Hammer and LeanCert.Tactic
+    when installed).
 
     Returns errors/warnings, the goal at every `sorry`, axioms per declaration and `ok`
     (no errors, no sorry, only propext/Classical.choice/Quot.sound). `use_lemmas` prepends
@@ -281,11 +331,13 @@ def portfolio(
     """Try a bounded tactic portfolio on one `sorry` in `code`.
 
     Default portfolio: rfl, decide, norm_num, simp, omega, ring, linarith, positivity,
-    nlinarith, linear_combination (coefficients proposed by Sage via a Groebner basis),
-    aesop, grind, exact?, apply?. Each try is capped by `heartbeats` and `per_tactic_s`.
-    `explore=True` also tries native_decide, reported as exploration only: it is never
-    spliced into `verified_code` and never valid in a PROVED certificate. The first closing
-    tactic (or the term `exact?` found) is spliced in and the whole file is rechecked.
+    `leancert (trust := kernel)`, nlinarith, linear_combination (coefficients proposed by
+    Sage via a Groebner basis), aesop, grind, `duper [*]`, exact?, apply?, hammer (LeanCert,
+    Duper and hammer only when installed). Each try is capped by `heartbeats` and
+    `per_tactic_s`; give hammer 60 s or more. `explore=True` also tries native_decide,
+    reported as exploration only: it is never spliced into `verified_code` and never valid
+    in a PROVED certificate. The first closing tactic (or the term `exact?` found, or the
+    tactic `hammer` suggests) is spliced in and the whole file is rechecked.
     """
     base = _check(code, use_lemmas, 120)
     sorries = base.get("sorries", [])
@@ -318,6 +370,8 @@ def portfolio(
         if _closed(response):
             entry["outcome"] = "closed"
             entry["text"] = suggestion or tactic
+            if tactic.split()[0] in SUGGESTION_ONLY and not suggestion:
+                entry["exploration_only"] = True  # nothing certificate-safe to splice
         else:
             entry["outcome"] = "failed"
             entry["goals_after"] = response.get("goals")
@@ -327,7 +381,8 @@ def portfolio(
             if suggestion:
                 entry["suggestion"] = suggestion
         results.append(entry)
-        if entry["outcome"] == "closed" and label not in EXPLORATION_ONLY and verified is None:
+        usable = entry["outcome"] == "closed" and not entry.get("exploration_only")
+        if usable and verified is None:
             start = _offset(code, target["line"], target["col"])
             spliced = code[:start] + _indent(entry["text"], target["col"]) + code[start + 5 :]
             recheck = _check(spliced, use_lemmas, 120)
@@ -411,6 +466,9 @@ def repair(
             if any(m["severity"] == "error" for m in response.get("messages", [])):
                 round_log["tried"].append({"tactic": label, "outcome": "failed"})
                 continue
+            if tactic.split()[0] in SUGGESTION_ONLY and not _suggestion(response):
+                round_log["tried"].append({"tactic": label, "outcome": "no_suggestion"})
+                continue
             text = _indent(_suggestion(response) or tactic, col)
             if mode == "replace":
                 variants = [source[:start] + text + source[end:]]
@@ -453,12 +511,14 @@ def repair(
 def register_lemma(lemma_id: int, code: str, use_lemmas: list[int] | None = None) -> dict[str, Any]:
     """Check a finished lemma and mark whiteboard lemma `lemma_id` as proved.
 
-    Requires `ok` from `check`: no errors, no sorry, standard axioms only, and no
-    native_decide. The source and each declaration's type become searchable through the
-    library server and reusable by everyone via `use_lemmas`.
+    Requires `ok` from `check` (no errors, no sorry, standard axioms only) and the same text
+    rules as a verdict certificate (no native_decide, hammer, LeanCert native trust, ...),
+    since registered lemmas end up inside certificates. The source and each declaration's
+    type become searchable through the library server and reusable by everyone via
+    `use_lemmas`.
     """
-    if re.search(r"\bnative_decide\b", code):
-        return {"registered": False, "reason": "native_decide is exploration only"}
+    if reason := scan_certificate(code):
+        return {"registered": False, "reason": reason}
     result = _check(code, use_lemmas, 300)
     if not result["ok"]:
         return {"registered": False, "reason": "does not fully check", "check": _public(result)}
@@ -472,3 +532,86 @@ def register_lemma(lemma_id: int, code: str, use_lemmas: list[int] | None = None
         board.update_lemma(lemma_id, deps=use_lemmas)
     ref = board.record_proved_lemma(lemma_id, code, types)
     return {"registered": True, "proof_ref": f"lean:{ref}", "declarations": types}
+
+
+@server.tool()
+def step(proof_state: int, tactic: str, timeout_s: int = 60) -> dict[str, Any]:
+    """Proof-state branching: run one tactic on a proof state and get the next one.
+
+    `proof_state` comes from a `sorry` reported by `check` (its `proofState`) or from an
+    earlier `step`. A state can be extended any number of times, so search trees branch
+    freely without re-elaborating the file. States are lost when the REPL restarts (after a
+    timeout, or every 400 commands): then `check` again. Exploration only: the finished
+    proof still has to be written out and checked.
+    """
+    _guard(tactic)
+    try:
+        response = repl.tactic(tactic, proof_state, timeout_s)
+    except ReplTimeout as e:
+        return {"closed": False, "error": str(e)}
+    return {
+        "closed": _closed(response),
+        "proof_state": response.get("proofState"),
+        "goals": response.get("goals"),
+        "messages": [m["data"][:1500] for m in response.get("messages", [])],
+        "suggestion": _suggestion(response),
+        "error": response.get("message"),
+    }
+
+
+def _kimina_result(code: str, result: dict[str, Any], names: list[str]) -> dict[str, Any]:
+    """Kimina's REPL response in `check`'s shape (lines relative to `code`)."""
+    response = result.get("response") or {}
+    if result.get("error") or "message" in response:
+        return {"ok": False, "error": result.get("error") or response.get("message")}
+    offset = HEADER.count("\n") + 2
+    messages = _messages(response, offset)
+    errors = [m for m in messages if m["severity"] == "error"]
+    code_lines = code.count("\n") + 1
+    printed = [m["text"] for m in messages if m["line"] > code_lines]
+    axioms = {n: _parse_axioms(" ".join(t for t in printed if f"'{n}'" in t)) for n in names}
+    sorries = [
+        {"line": s["pos"]["line"] - offset, "col": s["pos"]["column"], "goal": s["goal"]}
+        for s in response.get("sorries", [])
+    ]
+    bad = sorted({a for ax in axioms.values() if ax for a in ax} - set(STANDARD_AXIOMS))
+    return {
+        "ok": not errors and not sorries and not bad and None not in axioms.values(),
+        "errors": errors,
+        "warnings": [m for m in messages if m["severity"] == "warning" and m["line"] <= code_lines],
+        "sorries": sorries,
+        "axioms": axioms,
+        "nonstandard_axioms": bad,
+        "seconds": round(result.get("time") or 0, 2),
+    }
+
+
+@server.tool()
+def batch_check(snippets: list[str], timeout_s: int = 120) -> dict[str, Any]:
+    """Check many independent snippets (no `use_lemmas`), each like `check`: errors, the goal
+    at each `sorry`, axioms per declaration and `ok`.
+
+    With KIMINA_REPLS > 0 in $LEMMATA_HOME/options.env the snippets run in parallel on a
+    Kimina Lean Server pool; otherwise one after another on the warm REPL. Use it to test
+    many candidate proofs or lemma variants at once.
+    """
+    for code in snippets:
+        _guard(code)
+    if kimina.repls <= 0:
+        return {
+            "backend": "warm REPL (sequential)",
+            "results": [_public(_check(code, None, timeout_s)) for code in snippets],
+        }
+    names = [_decl_names(code) for code in snippets]
+    sources = [
+        f"{HEADER}\n\n{code}\n\n" + "\n".join(f"#print axioms {n}" for n in decls)
+        for code, decls in zip(snippets, names, strict=True)
+    ]
+    results = kimina.check(sources, timeout_s)
+    return {
+        "backend": f"Kimina Lean Server ({kimina.repls} REPLs)",
+        "results": [
+            _kimina_result(code, r, decls)
+            for code, r, decls in zip(snippets, results, names, strict=True)
+        ],
+    }

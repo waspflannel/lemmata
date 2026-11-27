@@ -81,6 +81,26 @@ CREATE TABLE IF NOT EXISTS coverage (
   owner TEXT,
   created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS evolve_runs (
+  id TEXT PRIMARY KEY,
+  problem TEXT,
+  evaluator TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS evolve_runs_frozen BEFORE UPDATE ON evolve_runs
+  BEGIN SELECT RAISE(ABORT, 'an evolve run keeps its evaluator'); END;
+CREATE TABLE IF NOT EXISTS programs (
+  id INTEGER PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES evolve_runs(id),
+  parent_id INTEGER,
+  program TEXT NOT NULL,
+  program_sha TEXT NOT NULL,
+  score REAL,
+  object TEXT,
+  error TEXT,
+  created_at REAL NOT NULL,
+  UNIQUE (run_id, program_sha)
+);
 """
 
 
@@ -257,6 +277,66 @@ def add_coverage(
     if outcome == "lemma_refuted" and lemma_id is not None:
         update_lemma(lemma_id, status="refuted", proof_ref=f"coverage:{cur.lastrowid}")
     return int(cur.lastrowid or 0)
+
+
+def evolve_run(run_id: str, evaluator: str | None, problem: str | None) -> str:
+    """The run's frozen evaluator, creating the run on first use."""
+    db = connect()
+    row = db.execute("SELECT evaluator FROM evolve_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        if evaluator is None:
+            raise ValueError(f"no evolve run {run_id!r}; start it with an evaluator")
+        db.execute(
+            "INSERT INTO evolve_runs VALUES (?, ?, ?, ?)", (run_id, problem, evaluator, time.time())
+        )
+        return evaluator
+    if evaluator is not None and evaluator != row["evaluator"]:
+        raise ValueError(f"evolve run {run_id!r} already has a different evaluator")
+    return row["evaluator"]
+
+
+def add_program(
+    run_id: str,
+    program: str,
+    parent_id: int | None,
+    score: float | None,
+    obj: Any,
+    error: str | None,
+) -> int:
+    cur = connect().execute(
+        "INSERT OR IGNORE INTO programs (run_id, parent_id, program, program_sha, score, object,"
+        " error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, parent_id, program, sha256(program), score, json.dumps(obj), error, time.time()),
+    )
+    return int(cur.lastrowid or 0)
+
+
+def evolve_sample(run_id: str, k: int) -> dict[str, Any]:
+    """Parents for the next mutation, OpenEvolve-style: the k best programs (exploit), plus
+    the best of each program-length niche they miss (explore), plus run statistics."""
+    db = connect()
+    scored = "FROM programs WHERE run_id = ? AND score IS NOT NULL"
+    best = _rows(
+        db.execute(f"SELECT id, score, program {scored} ORDER BY score DESC LIMIT ?", (run_id, k))
+    )
+    niches = _rows(
+        db.execute(
+            "SELECT id, MAX(score) AS score, program FROM programs WHERE run_id = ?"
+            " AND score IS NOT NULL GROUP BY LENGTH(program) / 500 ORDER BY score DESC LIMIT ?",
+            (run_id, 2 * k),
+        )
+    )
+    seen = {p["id"] for p in best}
+    stats = db.execute(
+        "SELECT COUNT(*) AS programs, COUNT(score) AS scored, MAX(score) AS best_score"
+        " FROM programs WHERE run_id = ?",
+        (run_id,),
+    ).fetchone()
+    return {
+        "parents": best,
+        "inspirations": [p for p in niches if p["id"] not in seen][:k],
+        **dict(stats),
+    }
 
 
 server = MCPServer(
