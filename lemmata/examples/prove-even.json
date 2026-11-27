@@ -1,0 +1,5 @@
+{
+  "title": "n(n+1) is even",
+  "informal": "For every natural number n, n * (n + 1) is even.",
+  "claim": "∀ n : ℕ, Even (n * (n + 1))"
+}
