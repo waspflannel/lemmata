@@ -1,0 +1,38 @@
+[project]
+name = "lemmata-mcp"
+version = "0.1.0"
+description = "MCP servers for the lemmata math harness: Lean, library search, computation, verdicts, whiteboard."
+requires-python = ">=3.12"
+dependencies = [
+  "mcp==2.2.0",
+  "lean-lsp-mcp==0.33.0",
+  "python-flint==0.9.0",
+  "python-sat==1.9.dev25",
+  "networkx==3.7",
+]
+
+[project.scripts]
+lemmata-mcp = "lemmata_mcp.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["lemmata_mcp"]
+
+[tool.setuptools.package-data]
+lemmata_mcp = ["pins.env", "DumpDecls.lean"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+# Lean/math notation (ℕ, ∀, ⊢, ...) is intended in strings and docstrings.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"

@@ -25,20 +25,56 @@ check_for_update_on_startup = false
 [lemmata]
 # The single fork-only switch. Gates non-math extensions in app-server and turns
 # on the hard tool allowlist below. Entries are `name` or `namespace/name`.
-# MCP tools live in the `mcp__<server>` namespace. The tool names are provisional
-# until the math servers exist; confirm them with `codex debug prompt-input`.
+# MCP tools live in the `mcp__<server>` namespace. Keep this list equal to the union of
+# the `enabled_tools` lists below. verdict/freeze_statement is operator-only and absent.
 mode = true
 research = false
 allowed_tools = [
+  # lean: warm REPL
   "mcp__lean/check",
-  "mcp__lean/search_mathlib",
-  "mcp__brute_force/run",
-  "mcp__smt/solve",
-  "mcp__cas/eval",
-  "mcp__oeis/search",
+  "mcp__lean/portfolio",
+  "mcp__lean/repair",
+  "mcp__lean/register_lemma",
+  # lean_lsp: lean-lsp-mcp on Scratch/ files written by lean/check save_as
+  "mcp__lean_lsp/lean_goal",
+  "mcp__lean_lsp/lean_term_goal",
+  "mcp__lean_lsp/lean_diagnostic_messages",
+  "mcp__lean_lsp/lean_hover_info",
+  "mcp__lean_lsp/lean_completions",
+  "mcp__lean_lsp/lean_code_actions",
+  "mcp__lean_lsp/lean_file_outline",
+  "mcp__lean_lsp/lean_declaration_file",
+  "mcp__lean_lsp/lean_references",
+  "mcp__lean_lsp/lean_multi_attempt",
+  "mcp__lean_lsp/lean_run_code",
+  "mcp__lean_lsp/lean_verify",
+  "mcp__lean_lsp/lean_minimal_hypotheses",
+  "mcp__lean_lsp/lean_local_search",
+  "mcp__lean_lsp/lean_loogle",
+  # library
+  "mcp__library/search_decls",
+  "mcp__library/decl_info",
+  "mcp__library/formal_conjectures",
+  "mcp__library/oeis",
+  # compute
+  "mcp__compute/enumerate",
+  "mcp__compute/graph_search",
+  "mcp__compute/sat_solve",
+  "mcp__compute/sage",
+  "mcp__compute/ideal_cofactors",
+  "mcp__compute/interval_sign",
+  # verdict
+  "mcp__verdict/get_challenge",
+  "mcp__verdict/replay_witness",
+  "mcp__verdict/check_equivalence",
+  "mcp__verdict/submit_verdict",
+  # whiteboard
   "mcp__whiteboard/read",
-  "mcp__whiteboard/write",
-  "mcp__submit_verdict/submit_verdict",
+  "mcp__whiteboard/lemma_add",
+  "mcp__whiteboard/lemma_update",
+  "mcp__whiteboard/dead_end_add",
+  "mcp__whiteboard/dead_end_find",
+  "mcp__whiteboard/coverage_add",
 ]
 
 # Model-side multi-agent: the model catalog picks multi-agent v2 unless this is off.
@@ -155,33 +191,59 @@ cli_daybreak = false
 api_key_cyber_access_programs = false
 daybreak_program_propagation = false
 
-# --- Future math tools (placeholders; uncomment once the servers exist) ----------
-# Each server should also set `enabled_tools` to its allowlisted tool names.
-#
-# [mcp_servers.lean]
-# command = "lemmata-lean-mcp"          # Lean 4 + Mathlib check / search
-# enabled_tools = ["check", "search_mathlib"]
-#
-# [mcp_servers.brute_force]
-# command = "lemmata-brute-force-mcp"   # own sandbox, time and memory limits
-# enabled_tools = ["run"]
-#
-# [mcp_servers.smt]
-# command = "lemmata-smt-mcp"           # Z3
-# enabled_tools = ["solve"]
-#
-# [mcp_servers.cas]
-# command = "lemmata-cas-mcp"           # SymPy / Sage
-# enabled_tools = ["eval"]
-#
-# [mcp_servers.oeis]
-# command = "lemmata-oeis-mcp"
-# enabled_tools = ["search"]
-#
-# [mcp_servers.whiteboard]
-# command = "lemmata-whiteboard-mcp"    # shared state across worker threads
-# enabled_tools = ["read", "write"]
-#
-# [mcp_servers.submit_verdict]
-# command = "lemmata-verdict-mcp"       # validates certificates server-side
-# enabled_tools = ["submit_verdict"]
+# --- Math tools (lemmata/mcp, installed in WSL by lemmata/mcp/setup-wsl.sh) -----
+# Codex on Windows starts each server through wsl.exe. If codex itself runs inside
+# WSL, use command = "/home/<you>/.lemmata/bin/lemmata-mcp" and args = ["<server>"].
+# `-d Ubuntu` must match WSL_DISTRO in lemmata/mcp/lemmata_mcp/pins.env.
+
+[mcp_servers.lean]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean"]
+startup_timeout_sec = 120
+tool_timeout_sec = 1800
+enabled_tools = ["check", "portfolio", "repair", "register_lemma"]
+
+[mcp_servers.lean_lsp]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean_lsp"]
+startup_timeout_sec = 120
+# The first lean_loogle call builds the local Loogle index (minutes).
+tool_timeout_sec = 1800
+enabled_tools = [
+  "lean_goal", "lean_term_goal", "lean_diagnostic_messages", "lean_hover_info",
+  "lean_completions", "lean_code_actions", "lean_file_outline", "lean_declaration_file",
+  "lean_references", "lean_multi_attempt", "lean_run_code", "lean_verify",
+  "lean_minimal_hypotheses", "lean_local_search", "lean_loogle",
+]
+
+[mcp_servers.library]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "library"]
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis"]
+
+[mcp_servers.compute]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "compute"]
+startup_timeout_sec = 120
+tool_timeout_sec = 3600
+enabled_tools = [
+  "enumerate", "graph_search", "sat_solve", "sage", "ideal_cofactors", "interval_sign",
+]
+
+[mcp_servers.verdict]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "verdict"]
+startup_timeout_sec = 120
+tool_timeout_sec = 3700  # comparator may take up to an hour on a large proof
+enabled_tools = ["get_challenge", "replay_witness", "check_equivalence", "submit_verdict"]
+
+[mcp_servers.whiteboard]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "whiteboard"]
+startup_timeout_sec = 120
+tool_timeout_sec = 60
+enabled_tools = [
+  "read", "lemma_add", "lemma_update", "dead_end_add", "dead_end_find", "coverage_add",
+]

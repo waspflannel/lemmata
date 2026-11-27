@@ -35,9 +35,16 @@ research = true
 allowed_tools = [
   "web_search",            # hosted Responses web search
   "web/run",               # standalone web search extension
-  "mcp__oeis/search",
+  # Literature tools only: no proving, computing or verdict submission.
+  "mcp__library/search_decls",
+  "mcp__library/decl_info",
+  "mcp__library/formal_conjectures",
+  "mcp__library/oeis",
+  "mcp__lean_lsp/lean_loogle",
+  "mcp__lean_lsp/lean_local_search",
+  "mcp__verdict/get_challenge",
   "mcp__whiteboard/read",
-  "mcp__whiteboard/write",
+  "mcp__whiteboard/lemma_add",
 ]
 
 # Model-side multi-agent: the model catalog picks multi-agent v2 unless this is off.
@@ -153,33 +160,33 @@ cli_daybreak = false
 api_key_cyber_access_programs = false
 daybreak_program_propagation = false
 
-# --- Future math tools (placeholders; uncomment once the servers exist) ----------
-# Each server should also set `enabled_tools` to its allowlisted tool names.
-#
-# [mcp_servers.lean]
-# command = "lemmata-lean-mcp"          # Lean 4 + Mathlib check / search
-# enabled_tools = ["check", "search_mathlib"]
-#
-# [mcp_servers.brute_force]
-# command = "lemmata-brute-force-mcp"   # own sandbox, time and memory limits
-# enabled_tools = ["run"]
-#
-# [mcp_servers.smt]
-# command = "lemmata-smt-mcp"           # Z3
-# enabled_tools = ["solve"]
-#
-# [mcp_servers.cas]
-# command = "lemmata-cas-mcp"           # SymPy / Sage
-# enabled_tools = ["eval"]
-#
-# [mcp_servers.oeis]
-# command = "lemmata-oeis-mcp"
-# enabled_tools = ["search"]
-#
-# [mcp_servers.whiteboard]
-# command = "lemmata-whiteboard-mcp"    # shared state across worker threads
-# enabled_tools = ["read", "write"]
-#
-# [mcp_servers.submit_verdict]
-# command = "lemmata-verdict-mcp"       # validates certificates server-side
-# enabled_tools = ["submit_verdict"]
+# --- Math tools (lemmata/mcp, installed in WSL by lemmata/mcp/setup-wsl.sh) -----
+# Read-only subset of the prover's servers. See lemmata.config.toml for the launch notes.
+
+[mcp_servers.lean_lsp]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean_lsp"]
+startup_timeout_sec = 120
+tool_timeout_sec = 1800
+enabled_tools = ["lean_loogle", "lean_local_search"]
+
+[mcp_servers.library]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "library"]
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis"]
+
+[mcp_servers.verdict]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "verdict"]
+startup_timeout_sec = 120
+tool_timeout_sec = 60
+enabled_tools = ["get_challenge"]
+
+[mcp_servers.whiteboard]
+command = "wsl.exe"
+args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "whiteboard"]
+startup_timeout_sec = 120
+tool_timeout_sec = 60
+enabled_tools = ["read", "lemma_add"]
