@@ -169,8 +169,10 @@ daybreak_program_propagation = false
 # Read-only subset of the prover's servers. See lemmata.config.toml for the launch notes.
 
 # Expose MCP tools directly, including on models that default to Code Mode Only.
+# Approve calls to these local servers; enabled_tools and allowed_tools still apply.
 [mcp_servers.lean_lsp]
 omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean_lsp"]
 startup_timeout_sec = 120
@@ -179,6 +181,7 @@ enabled_tools = ["lean_loogle", "lean_local_search"]  # + "lean_leansearch" if o
 
 [mcp_servers.library]
 omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "library"]
 startup_timeout_sec = 120
@@ -187,6 +190,7 @@ enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis", "pi_
 
 [mcp_servers.verdict]
 omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "verdict"]
 startup_timeout_sec = 120
@@ -195,6 +199,7 @@ enabled_tools = ["get_challenge"]
 
 [mcp_servers.whiteboard]
 omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "whiteboard"]
 startup_timeout_sec = 120
