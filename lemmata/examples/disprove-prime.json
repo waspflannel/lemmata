@@ -1,0 +1,7 @@
+{
+  "title": "2^n + 1 is always prime",
+  "informal": "For every positive integer n, 2^n + 1 is prime.",
+  "claim": "∀ n : ℕ, 0 < n → Nat.Prime (2 ^ n + 1)",
+  "predicate": "def hypotheses(n):\n    return n > 0\n\ndef conclusion(n):\n    m = 2 ** n + 1\n    return m > 1 and all(m % d != 0 for d in range(2, int(m ** 0.5) + 1))\n",
+  "variables": [{"name": "n", "type": "nat", "max": 40}]
+}

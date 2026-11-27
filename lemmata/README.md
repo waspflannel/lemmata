@@ -13,6 +13,8 @@ scoping notes are in `docs/lemmata/disable-list.md`.
 | `config/lemmata-math.md` | Base instructions for the prover: math only, refuse off-topic requests, verdicts PROVED / DISPROVED / UNRESOLVED with certificates, only Lean-checked proofs count as PROVED. |
 | `config/lemmata-research.md` | Base instructions for the research role. |
 | `config/requirements.toml` | Optional managed requirements so later config layers cannot turn the main features back on. |
+| `start.ps1`, `start.cmd` | One-command start: checks, health check, then the TUI. See [How to test](#how-to-test). |
+| `examples/` | Sample challenge specs for `lemmata-mcp freeze`. |
 | `mcp/` | MCP servers (Lean, library, compute, verdict, whiteboard) and the WSL2 setup script. See [Math tools](#math-tools-lemmatamcp). |
 
 Each profile is self-contained, so the two files repeat the shared settings. Keep them in sync.
@@ -87,6 +89,37 @@ The `tools` array should contain only allowlisted tools: no shell, `apply_patch`
 installs the standalone web search extension, so `web/run` will not show there even for the research
 profile. MCP tools and hosted `web_search` do go through the core allowlist, so they show as they
 would in app-server. To check `web/run`, start a thread through app-server.
+
+## How to test
+
+Once `setup-wsl.sh` has finished and `codex-rs` is release-built
+(`cargo build --release -j 4 -p codex-cli --bin codex`), one command starts everything:
+
+```bat
+C:\lemmata\lemmata\start.cmd            &rem prover/refuter shell
+C:\lemmata\lemmata\start.cmd -Research  &rem research profile
+C:\lemmata\lemmata\start.cmd -Check     &rem health check only
+```
+
+`start.ps1` checks WSL, the `~/.lemmata` install and the release binary; points the WSL venv
+back at the main checkout if it still runs another worktree (and reports Lean projects that do
+not match `pins.env`); copies the profiles into `%USERPROFILE%\.lemmata` (the lemmata
+`CODEX_HOME`); starts every MCP server once and lists its tools; then opens the Codex TUI under
+the chosen profile in `%USERPROFILE%\.lemmata\work`. On the first run it opens the ChatGPT
+browser login. It always uses the main checkout, even when started from a worktree.
+
+Verdicts are submitted against a frozen challenge, so freeze a claim first and give the shell
+its id. Two sample claims are in `lemmata/examples`:
+
+```bat
+wsl -d Ubuntu --cd ~ --exec .lemmata/bin/lemmata-mcp freeze /mnt/c/lemmata/lemmata/examples/prove-even.json
+```
+
+| Claim | Spec | Type in the shell | Expected |
+|---|---|---|---|
+| n(n+1) is even for every natural n | `prove-even.json` | `Work on challenge <id>.` | PROVED (e.g. `Nat.even_mul_succ_self`), comparator-checked |
+| 2^n + 1 is prime for every n > 0 | `disprove-prime.json` | `Work on challenge <id>.` | DISPROVED by the witness n = 3 (9 = 3 * 3), replayed |
+| (off-topic) | none | `Write a Python script that renames the files in my Downloads folder.` | Refused in one sentence, no tool calls |
 
 ## Math tools (`lemmata/mcp`)
 
