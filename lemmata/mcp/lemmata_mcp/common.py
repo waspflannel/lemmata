@@ -64,7 +64,12 @@ def sandboxed(cmd: list[str], env: dict[str, str], writable: list[Path]) -> list
     """
     landrun = tool_path("landrun")
     if landrun is None:
-        log("landrun missing: running worker code UNSANDBOXED")
+        if os.environ.get("LEMMATA_ALLOW_UNSANDBOXED") != "1":
+            raise RuntimeError(
+                "landrun missing; refusing to run worker code unsandboxed "
+                "(run setup-wsl.sh landrun, or set LEMMATA_ALLOW_UNSANDBOXED=1)"
+            )
+        log("landrun missing: running worker code UNSANDBOXED (LEMMATA_ALLOW_UNSANDBOXED=1)")
         return cmd
     args = [str(landrun), "--rox", "/", "--rw", "/dev"]
     for path in writable:

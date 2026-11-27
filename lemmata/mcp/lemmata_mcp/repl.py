@@ -36,8 +36,14 @@ class Repl:
     def _lean_env(self) -> dict[str, str]:
         """LEAN_PATH / LEAN_SYSROOT as `lake env` sets them (computed once, unsandboxed)."""
         if self._env is None:
+            # Sandboxed too: the work project is shared with lean-lsp-mcp, so its lakefile is
+            # treated as untrusted input.
+            env = base_env()
             code, out, err = run(
-                ["lake", "env", "printenv"], cwd=self.project, timeout=300, env=base_env()
+                sandboxed(["lake", "env", "printenv"], env, [SCRATCH]),
+                cwd=self.project,
+                timeout=300,
+                env=env,
             )
             if code != 0:
                 raise RuntimeError(f"`lake env` failed in {self.project}: {err[-1000:]}")

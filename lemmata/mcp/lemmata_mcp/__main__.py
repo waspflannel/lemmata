@@ -46,9 +46,13 @@ def lean_lsp() -> None:
         LEAN_LOOGLE_LOCAL_ONLY="true",
         LEAN_LOOGLE_CACHE_DIR=str(loogle_cache),
         LEAN_MCP_DISABLED_TOOLS=",".join(LEAN_LSP_DISABLED),
+        XDG_CACHE_HOME=str(SCRATCH / "cache"),
     )
     binary = str(Path(sys.executable).parent / "lean-lsp-mcp")
-    cmd = sandboxed([binary], env, [WORK_PROJECT, loogle_cache, SCRATCH, Path.home() / ".cache"])
+    # Never the project root: a writable lakefile or .lake/packages would run unsandboxed
+    # the next time trusted code calls lake there.
+    writable = [WORK_PROJECT / "Scratch", WORK_PROJECT / ".lake" / "build", loogle_cache, SCRATCH]
+    cmd = sandboxed([binary], env, writable)
     os.execvpe(cmd[0], cmd, env)
 
 

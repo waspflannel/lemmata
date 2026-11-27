@@ -137,8 +137,10 @@ Details that matter for trust:
   solution is ever compiled where an earlier one was. A small proof checks in about 20 s.
 - **Sandbox.** Everything that runs worker-written code (the REPL, lean-lsp-mcp, Python predicates,
   Sage, the witness replay) runs under landrun with write access only to `~/.lemmata/scratch`
-  (lean-lsp-mcp: also the work project and its caches). It cannot touch the verification
-  Mathlib, `~/.elan` or the state databases. The WSL2 6.6 kernel has Landlock ABI 3, which cannot
+  (lean-lsp-mcp: also the work project's `Scratch/` and `.lake/build`, never its lakefile or
+  packages, which trusted code later runs `lake` on). It cannot touch the verification
+  Mathlib, `~/.elan` or the state databases. If landrun is missing the servers refuse to run
+  worker code unless `LEMMATA_ALLOW_UNSANDBOXED=1` is set. The WSL2 6.6 kernel has Landlock ABI 3, which cannot
   restrict network access, so sandboxed code can still reach the network.
 - **Witness replay** is independent of the search: a fresh `python -I` interpreter, the frozen
   predicate (not the worker's), exact types (`int`, `nat`, `pos`, `rat`, `bool`, `list[int]`,
