@@ -91,9 +91,9 @@ allowed_tools = [
   "mcp__whiteboard/coverage_add",
 ]
 
-# Model-side multi-agent: the model catalog picks multi-agent v2 unless this is off.
+# Subagents on: [agents] + multi_agent_v2 ([features].multi_agent is deprecated).
 [agents]
-enabled = false
+enabled = true
 
 [skills]
 include_instructions = false
@@ -162,8 +162,7 @@ guardian_approval = false
 guardianv2 = false
 guardianv3 = false
 # Model-side multi-agent
-multi_agent = false
-multi_agent_v2 = false
+multi_agent_v2 = true
 agent_message_board = false
 agent_message_board_mcp = false
 wake_on_agent_messages = false
