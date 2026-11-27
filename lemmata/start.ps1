@@ -100,10 +100,19 @@ Write-Ok 'installed lemmata and lemmata-research profiles'
 
 # --- Login ------------------------------------------------------------------------
 Write-Step 'ChatGPT login'
-$status = (& $codex login status 2>&1 | Out-String).Trim()
-if ($LASTEXITCODE -eq 0 -and $status -eq 'Logged in using ChatGPT') {
-    Write-Ok $status
-} elseif ($LASTEXITCODE -eq 0) {
+# codex prints status on stderr; PS 5.1 wraps 2>&1 lines as ErrorRecords, so stringify each line.
+function Get-LoginStatus {
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    try { $out = (& $codex login status 2>&1 | ForEach-Object { "$_" }) -join "`n" } finally { $ErrorActionPreference = $eap }
+    $state = if ($LASTEXITCODE -ne 0 -or $out -match 'Not logged in') { 'none' }
+        elseif ($out -match 'Logged in using ChatGPT') { 'chatgpt' }
+        elseif ($out -match 'API key') { 'apikey' } else { 'other' }
+    [pscustomobject]@{ State = $state; Text = $out.Trim() }
+}
+$login = Get-LoginStatus
+if ($login.State -eq 'chatgpt') {
+    Write-Ok 'Logged in using ChatGPT'
+} elseif ($login.State -ne 'none') {
     Stop-Lemmata ("$codexHome has a non-ChatGPT login. lemmata uses the ChatGPT login only:`n" +
         "         `$env:CODEX_HOME='$codexHome'; & '$codex' logout   then run this again")
 } elseif ($Check) {
@@ -112,15 +121,17 @@ if ($LASTEXITCODE -eq 0 -and $status -eq 'Logged in using ChatGPT') {
     Write-Note 'Not logged in. A browser window opens: sign in with your ChatGPT account.'
     Write-Note '(Plan login only. Do not create an API key; lemmata never uses one.)'
     & $codex login -c forced_login_method=chatgpt
-    $status = (& $codex login status 2>&1 | Out-String).Trim()
-    if ($status -ne 'Logged in using ChatGPT') { Stop-Lemmata "Login did not finish ($status)." }
-    Write-Ok $status
+    $login = Get-LoginStatus
+    if ($login.State -ne 'chatgpt') { Stop-Lemmata "Login did not finish ($($login.Text))." }
+    Write-Ok 'Logged in using ChatGPT'
 }
 
 # --- MCP health check -------------------------------------------------------------
 Write-Step 'MCP servers (start each one, list its tools)'
-$smoke = wsl.exe -d $distro --cd '~' --exec .lemmata/bin/lemmata-mcp smoke 2>&1
+$eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+$smoke = wsl.exe -d $distro --cd '~' --exec .lemmata/bin/lemmata-mcp smoke 2>&1 | ForEach-Object { "$_" }
 $smokeOk = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $eap
 foreach ($line in $smoke) {
     if ("$line" -match '^(\w+): (\d+) tools$') { Write-Ok "$($Matches[1]): $($Matches[2]) tools" }
     elseif (-not $smokeOk) { Write-Host "       $line" }
