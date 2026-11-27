@@ -14,6 +14,9 @@ started from a git worktree, so deleting a worktree never leaves WSL pointing at
 lemmata\start.cmd             # prover/refuter shell
 lemmata\start.cmd -Research   # research profile (web search limited to math sources)
 lemmata\start.cmd -Check      # health check only, no shell
+
+.EXAMPLE
+wsl -d Ubuntu --cd ~ --exec .lemmata/bin/lemmata-mcp lts search --sort easiest
 #>
 param(
     [switch]$Research,

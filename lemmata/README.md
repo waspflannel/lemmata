@@ -157,6 +157,28 @@ Operators freeze challenges with `lemmata-mcp freeze spec.json`, where the spec 
 `predicate`, `variables`, `require_equivalence`, `second_of`). Use the returned id as the thread's
 problem id. `freeze_statement` is also an MCP tool, kept out of every worker allowlist.
 
+### Left to Solve
+
+Run these commands in WSL with `~/.lemmata/bin` on your PATH:
+
+```sh
+lemmata-mcp lts search --sort easiest --kind warmup --limit 10
+lemmata-mcp lts show Erdos1074.erdos_1074.variants.EHSNumbers_init
+lemmata-mcp lts brief Erdos1074.erdos_1074.variants.EHSNumbers_init
+lemmata-mcp lts import Erdos1074.erdos_1074.variants.EHSNumbers_init
+```
+
+Search also accepts `--q`, `--source`, `--field`, and `--offset`. The CLI reads public
+catalog endpoints, spaces requests at least four seconds apart, and caches responses for
+five minutes in `~/.lemmata/state/left-to-solve.db`.
+
+Import extracts the target and supported definitions from the pinned Formal Conjectures
+snapshot and checks them with the verification project's Lean and Mathlib. If it freezes
+successfully, paste the printed `Work on challenge <id>.` into lemmata. The existing
+`get_challenge` tool returns the cached brief under `left_to_solve` as reference data.
+Problems without a supported Lean translation are recorded in the local catalog cache as
+text-only, with the blocker printed by the CLI.
+
 ### Servers
 
 | Server | Tools | What it does |
