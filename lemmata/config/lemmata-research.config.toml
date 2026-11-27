@@ -40,8 +40,14 @@ allowed_tools = [
   "mcp__library/decl_info",
   "mcp__library/formal_conjectures",
   "mcp__library/oeis",
+  "mcp__library/pi_base",
+  "mcp__library/lmfdb",     # network: research profile only
   "mcp__lean_lsp/lean_loogle",
   "mcp__lean_lsp/lean_local_search",
+  # Optional, off by default (sends queries to leansearch.net, which is not a research
+  # source): set LEANSEARCH=1 in ~/.lemmata/options.env, then uncomment this line and the
+  # matching lean_lsp enabled_tools entry.
+  # "mcp__lean_lsp/lean_leansearch",
   "mcp__verdict/get_challenge",
   "mcp__whiteboard/read",
   "mcp__whiteboard/lemma_add",
@@ -168,14 +174,14 @@ command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean_lsp"]
 startup_timeout_sec = 120
 tool_timeout_sec = 1800
-enabled_tools = ["lean_loogle", "lean_local_search"]
+enabled_tools = ["lean_loogle", "lean_local_search"]  # + "lean_leansearch" if opted in
 
 [mcp_servers.library]
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "library"]
 startup_timeout_sec = 120
 tool_timeout_sec = 120
-enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis"]
+enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis", "pi_base", "lmfdb"]
 
 [mcp_servers.verdict]
 command = "wsl.exe"

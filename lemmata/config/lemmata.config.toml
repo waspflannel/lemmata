@@ -35,6 +35,8 @@ allowed_tools = [
   "mcp__lean/portfolio",
   "mcp__lean/repair",
   "mcp__lean/register_lemma",
+  "mcp__lean/step",
+  "mcp__lean/batch_check",
   # lean_lsp: lean-lsp-mcp on Scratch/ files written by lean/check save_as
   "mcp__lean_lsp/lean_goal",
   "mcp__lean_lsp/lean_term_goal",
@@ -56,6 +58,7 @@ allowed_tools = [
   "mcp__library/decl_info",
   "mcp__library/formal_conjectures",
   "mcp__library/oeis",
+  "mcp__library/pi_base",
   # compute
   "mcp__compute/enumerate",
   "mcp__compute/graph_search",
@@ -63,6 +66,17 @@ allowed_tools = [
   "mcp__compute/sage",
   "mcp__compute/ideal_cofactors",
   "mcp__compute/interval_sign",
+  "mcp__compute/gap",
+  "mcp__compute/pari",
+  "mcp__compute/macaulay2",
+  "mcp__compute/mace4",
+  "mcp__compute/snappy",
+  "mcp__compute/exact_lp",
+  "mcp__compute/sos_certificate",
+  "mcp__compute/pslq",
+  "mcp__compute/local_search",
+  "mcp__compute/conjecture_mine",
+  "mcp__compute/evolve",
   # verdict
   "mcp__verdict/get_challenge",
   "mcp__verdict/replay_witness",
@@ -201,7 +215,7 @@ command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean"]
 startup_timeout_sec = 120
 tool_timeout_sec = 1800
-enabled_tools = ["check", "portfolio", "repair", "register_lemma"]
+enabled_tools = ["check", "portfolio", "repair", "register_lemma", "step", "batch_check"]
 
 [mcp_servers.lean_lsp]
 command = "wsl.exe"
@@ -221,7 +235,8 @@ command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "library"]
 startup_timeout_sec = 120
 tool_timeout_sec = 120
-enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis"]
+# lmfdb needs the network: research profile only.
+enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis", "pi_base"]
 
 [mcp_servers.compute]
 command = "wsl.exe"
@@ -230,6 +245,8 @@ startup_timeout_sec = 120
 tool_timeout_sec = 3600
 enabled_tools = [
   "enumerate", "graph_search", "sat_solve", "sage", "ideal_cofactors", "interval_sign",
+  "gap", "pari", "macaulay2", "mace4", "snappy", "exact_lp", "sos_certificate", "pslq",
+  "local_search", "conjecture_mine", "evolve",
 ]
 
 [mcp_servers.verdict]

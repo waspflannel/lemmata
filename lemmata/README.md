@@ -106,8 +106,18 @@ Everything goes under `~/.lemmata` (`LEMMATA_HOME`): elan + the pinned Lean, a w
 (built with a user-local Go), CaDiCaL, drat-trim, nauty `geng`, Miniforge + Sage, the
 formal-conjectures checkout, OEIS `stripped.gz`/`names.gz`, the venv and the declaration index.
 Steps are idempotent; rerun one with `bash setup-wsl.sh <step>` (`elan lean verify go landrun
-comparator sat nauty venv sage formal_conjectures oeis index`). About 25 GB of disk and 20-30
-minutes on a fast connection. `lemmata-mcp smoke` starts every server over stdio and lists its tools.
+comparator sat nauty venv sage formal_conjectures oeis index ladr csdp soplex macaulay2 snappy
+pi_base kimina options`). About 30 GB of disk and 30-40 minutes on a fast connection.
+`lemmata-mcp smoke` starts every server over stdio and lists its tools.
+
+Upgrading a v1 install: `bash setup-wsl.sh lean verify venv ladr csdp soplex macaulay2 snappy
+pi_base kimina options` (explicit steps always rerun). `lean` and `verify` rewrite both
+lakefiles with LeanHammer and LeanCert ahead of Mathlib; Mathlib's cache stays valid because
+the shared dependencies (batteries, aesop, Qq) resolve to the same revisions.
+
+Runtime switches live in `~/.lemmata/options.env` (written once by the `options` step from
+`lemmata_mcp/options.env`, never overwritten): `KIMINA_REPLS` (default 0) and `LEANSEARCH`
+(default 0). Restart the MCP servers after editing it.
 
 Operators freeze challenges with `lemmata-mcp freeze spec.json`, where the spec holds
 `freeze_statement`'s arguments (`title`, `informal`, `claim`, optional `preamble`, `imports`,
@@ -119,10 +129,10 @@ problem id. `freeze_statement` is also an MCP tool, kept out of every worker all
 | Server | Tools | What it does |
 |---|---|---|
 | `verdict` | `get_challenge`, `replay_witness`, `check_equivalence`, `submit_verdict` | Frozen challenges (SQLite triggers refuse UPDATE/DELETE). PROVED = `theorem claim : Claim` judged by [comparator](https://github.com/leanprover/comparator) against the frozen `Challenge.lean`, axioms limited to propext/Classical.choice/Quot.sound. DISPROVED = comparator-checked `claim_neg : ¬ Claim`, or a witness replayed against the frozen Python predicate. UNRESOLVED needs a summary. Anything else is rejected. |
-| `lean` | `check`, `portfolio`, `repair`, `register_lemma` | One warm leanprover-community/repl with `import Mathlib` loaded once. Goals at each `sorry` and before each tactic, axioms per theorem, bounded tactic portfolio, multi-attempt repair, sharing proved lemmas. |
+| `lean` | `check`, `portfolio`, `repair`, `register_lemma`, `step`, `batch_check` | One warm leanprover-community/repl with `import Mathlib` (+ `Hammer`, `LeanCert.Tactic`) loaded once. Goals at each `sorry` and before each tactic, axioms per theorem, proof-state branching (`step`), bounded tactic portfolio (Duper, hammer, LeanCert kernel mode included), multi-attempt repair, batch checks (opt-in Kimina pool), sharing proved lemmas. |
 | `lean_lsp` | `lean_goal`, `lean_multi_attempt`, `lean_loogle`, ... (15 allowlisted) | lean-lsp-mcp on the work project, for files written by `check(save_as=...)`. Local Loogle only; network tools and `lean_build` are disabled; its REPL mode is off (the one warm REPL is `lean`'s). |
-| `library` | `search_decls`, `decl_info`, `formal_conjectures`, `oeis` | FTS index over every Mathlib/Batteries/core declaration (full type, `import`, package revision) plus project-proved lemmas; Formal Conjectures at a pinned commit; OEIS from local data (HTTP fallback). |
-| `compute` | `enumerate`, `graph_search`, `sat_solve`, `sage`, `ideal_cofactors`, `interval_sign` | Size-ordered symmetry-aware integer search with Plausible-style shrinking; geng graph search; CaDiCaL + DRAT-trim; warm Sage worker; Groebner cofactors for `linear_combination`; python-flint Arb signs. |
+| `library` | `search_decls`, `decl_info`, `formal_conjectures`, `oeis`, `pi_base`, `lmfdb` | FTS index over every Mathlib/Batteries/core declaration (full type, `import`, package revision) plus project-proved lemmas; Formal Conjectures at a pinned commit; OEIS from local data (HTTP fallback); pi-Base at a pinned commit with forward-chaining deduction; LMFDB read-only API (research profile only). |
+| `compute` | `enumerate`, `graph_search`, `local_search`, `sat_solve`, `sage`, `gap`, `pari`, `macaulay2`, `snappy`, `mace4`, `ideal_cofactors`, `interval_sign`, `exact_lp`, `sos_certificate`, `pslq`, `conjecture_mine`, `evolve` | Size-ordered symmetry-aware integer search with Plausible-style shrinking; geng graph search (or a saved graph6 list); simulated annealing; CaDiCaL + DRAT-trim; warm Sage worker (also SnapPy); GAP + SmallGrp, PARI/GP, Macaulay2 and Mace4 CLIs; Groebner cofactors for `linear_combination`; python-flint Arb signs; SoPlex exact LP; CSDP sum-of-squares certificates; mpmath PSLQ; TxGraffiti-style conjecture mining; OpenEvolve-style program evolution. |
 | `whiteboard` | `read`, `lemma_add`, `lemma_update`, `dead_end_add`, `dead_end_find`, `coverage_add` | Shared SQLite (WAL): lemma DAG, dead-end memory, refutation coverage. |
 
 Details that matter for trust:
@@ -142,7 +152,7 @@ Details that matter for trust:
   restrict network access, so sandboxed code can still reach the network.
 - **Witness replay** is independent of the search: a fresh `python -I` interpreter, the frozen
   predicate (not the worker's), exact types (`int`, `nat`, `pos`, `rat`, `bool`, `list[int]`,
-  `graph6`), and strict booleans (every hypothesis must be `True`, the conclusion `False`). The
+  `list[list[int]]`, `graph6`), and strict booleans (every hypothesis must be `True`, the conclusion `False`). The
   Python predicate is part of the frozen statement: review it as carefully as the Lean claim.
 - **Second formalization.** Freeze another formalization with `second_of=<id>`; `check_equivalence`
   comparator-checks `theorem claim_equiv : F1.Claim ↔ F2.Claim`. A challenge frozen with
@@ -174,6 +184,12 @@ All pins live in `lemmata/mcp/lemmata_mcp/pins.env`, read by both the setup scri
 | CaDiCaL / drat-trim / nauty | `rel-3.1.0` / `2e3b2dc` / `2.9.3` |
 | Sage | `10.10` (conda-forge) |
 | Formal Conjectures | `ea8e3e1` |
+| LeanHammer / LeanCert | `v4.35.0` / `v4.35.0` (Duper, lean-auto `v4.35.0`, lean-smt `6b26285`, cvc5 1.3.2, Zipperposition 2.1 via LeanHammer's manifest) |
+| Mace4 (LADR) / CSDP / SoPlex | `laitep/ladr@8317cb2` / `releases/6.2.0` / `8.1.0` (conda-forge) |
+| Macaulay2 / SnapPy | `1.22+ds-6build2` (Ubuntu 24.04 .debs, unpacked) / `3.3.2` (pip, in the Sage env) |
+| GAP / PARI/GP | as shipped in the Sage env (GAP with SmallGrp, PARI 2.17) |
+| pi-Base data / Kimina Lean Server | `c50a33c` / `fb2393d` |
+| mpmath / PyYAML | `1.4.1` / `6.0.3` |
 
 - v4.35.0 is the newest release that Mathlib, REPL, comparator and lean4export all tag. Mathlib
   is at v4.36.0, but comparator's newest tag is v4.35.0.
@@ -182,6 +198,71 @@ All pins live in `lemmata/mcp/lemmata_mcp/pins.env`, read by both the setup scri
 - Loogle's own repository targets an older Lean; lean-lsp-mcp rebuilds it for v4.35.0. The first
   index build peaks around 13 GB RAM (about 7 GB warm), close to the 15 GB WSL default.
 - nanoda (comparator's optional second kernel) is not installed; only Lean's kernel replays.
+
+### v2 toolkit: what counts and what does not
+
+The verdict rule is unchanged: PROVED only through a comparator-checked Lean proof, DISPROVED
+only through a comparator-checked `claim_neg` or the independent witness replay. Every v2 tool
+produces candidates or evidence that must go through one of those two doors.
+
+- **Hammers.** The REPL header and every solution import `Hammer` (LeanHammer, which brings
+  Duper, lean-auto with Zipperposition, lean-smt) and `LeanCert.Tactic`; comparator builds
+  solutions against the same packages in the read-only verification project. `duper` and the
+  tactics hammer suggests (`grind only [...]`, `apply ... ; simp_all`, `aesop ...`, `duper
+  [...]`) are ordinary kernel-checked proofs. `hammer`, `premises`, library suggestions and
+  `Hammer.*` names are rejected in certificates and by `register_lemma` (they would run provers
+  and premise selection inside comparator's build); `portfolio` splices hammer's suggestion,
+  never `hammer`. The text scan (`common.scan_certificate`) reads the source twice, comments
+  stripped and strings blanked, so neither view can hide a token.
+- **Premise selection is local.** LeanHammer's default selector sends goals to
+  leanpremise.net. The header sets the Sine Qua Non selector instead, and `lean` refuses code
+  that changes the selector.
+- **No lean-smt in the REPL.** The REPL binary cannot load lean-cvc5's native library, so a
+  cvc5 call aborts the process. The header sets `hammer.disableSmtDefault true` and `lean`
+  refuses `smt`. Comparator's Lake build does load native libraries.
+- **LeanCert** has three trust modes: `kernel` (`decide +kernel`, kernel only), `native`
+  (default, `native_decide`) and `auto` (kernel with native fallback). Only `(trust := kernel)`
+  can certify PROVED: native/auto are rejected up front, and the default (native) is rejected by
+  comparator through its `native_decide` axiom. `portfolio` offers kernel mode only.
+- **Exact LP / SOS.** `exact_lp` re-checks SoPlex's dual or Farkas certificate in exact
+  arithmetic, independently of SoPlex; `sos_certificate` rounds CSDP's Gram matrix to an exact
+  rational identity and re-expands it. Both return Lean hints (`linarith only [...]`,
+  `nlinarith [sq_nonneg ...]`) that still have to pass `lean.check` and comparator.
+- **Mace4** models come back as tables and as Lean `Fin n` definitions: DISPROVED needs the
+  table replayed against a frozen predicate (new witness type `list[list[int]]`) or a
+  `claim_neg` proof, e.g. by `decide` over those definitions.
+- **SnapPy** runs in the Sage worker (its verified routines need Sage). Rigorous:
+  `verify_hyperbolicity`, `volume(verified=True)`, `cusp_areas(verified=True)`,
+  `canonical_triangulation(verified=True)`, `isometry_signature(verified=True)`,
+  `complex_volume(verified_modulo_2_torsion=True)`, explicit isometries from
+  `is_isometric_to(..., return_isometries=True)`; exact: `fundamental_group()`, `homology()`.
+  Everything else (unverified volumes, shapes, length spectra, `identify()`, a `False` from
+  `is_isometric_to`) is numerical evidence. None of it is a verdict without Lean.
+- **PSLQ, conjecture mining, local search, evolve** give candidates: a relation to prove, a
+  bound to test, a witness to replay, a construction to replay. `local_search` records only
+  refutations as coverage, since a random search covers nothing.
+- **evolve** is OpenEvolve's loop (program database, best-k parents, size-niche
+  inspirations) with the worker as the mutation operator, so the only model involved is the
+  thread's own (ChatGPT login). OpenEvolve itself needs an OpenAI-compatible API endpoint, which
+  means paid API credits, so it is not installed.
+- **Sources.** pi-Base (CC BY 4.0) is a local clone; deduced traits are labelled. LMFDB is the
+  read-only API, research profile only. House of Graphs' robots.txt disallows `/api/`, so
+  nothing fetches it: a person can save a graph6 list under `~/.lemmata/graphs/` for
+  `graph_search(graph_list=...)`. LeanSearch (lean-lsp-mcp's `lean_leansearch`) sends queries
+  to leansearch.net, which is not a research source: off unless `LEANSEARCH=1` and allowlisted
+  in the research profile.
+- **Batch checking.** `batch_check` runs on the warm REPL unless `KIMINA_REPLS > 0`, then on a
+  Kimina Lean Server pool (same REPL binary and work project, localhost, random API key,
+  landrun). Kimina's per-REPL address-space cap is lifted because Lean dies under it; RAM is
+  bounded by the REPL count. Pantograph was not added: its newest release (v0.3.17) targets
+  Lean v4.31.0; `step` gives proof-state branching on the warm REPL instead.
+
+Resources measured on the reference machine (WSL2, 15 GB): the REPL with the v2 header loads
+in about 35 s cold (4 s warm cache) and shows about 7.3 GB RSS, 8.7 GB peak during `hammer`;
+most of that is shared, file-backed .olean mappings, so two extra Kimina REPLs raised used
+memory by about 1 GB. A small comparator check now takes 25-45 s (was about 20 s). Disk: about
+1.6 GB of extra Lean packages in each of the two projects, 0.6 GB Macaulay2, 0.45 GB SoPlex
+env, 0.5 GB Kimina venv, about 0.2 GB SnapPy in the Sage env.
 
 ### Known limits (v1)
 

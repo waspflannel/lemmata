@@ -9,6 +9,8 @@ dependencies = [
   "python-flint==0.9.0",
   "python-sat==1.9.dev25",
   "networkx==3.7",
+  "mpmath==1.4.1",
+  "PyYAML==6.0.3",
 ]
 
 [project.scripts]
@@ -22,7 +24,7 @@ build-backend = "setuptools.build_meta"
 packages = ["lemmata_mcp"]
 
 [tool.setuptools.package-data]
-lemmata_mcp = ["pins.env", "DumpDecls.lean"]
+lemmata_mcp = ["pins.env", "options.env", "DumpDecls.lean"]
 
 [tool.ruff]
 line-length = 100

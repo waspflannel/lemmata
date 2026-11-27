@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-from .common import HOME, SCRATCH, WORK_PROJECT, base_env, sandboxed
+from .common import HOME, OPTIONS, SCRATCH, WORK_PROJECT, base_env, sandboxed
 
 SERVERS = {
     "lean": "lean_server",
@@ -37,7 +37,11 @@ LEAN_LSP_DISABLED = [
 def lean_lsp() -> None:
     """Exec lean-lsp-mcp on the work project, sandboxed so Lean code it elaborates can write
     only the work project, its own caches and scratch. One warm REPL is the lean server's,
-    so lean-lsp-mcp's REPL mode stays off; Loogle is local only."""
+    so lean-lsp-mcp's REPL mode stays off; Loogle is local only. LeanSearch stays disabled
+    unless LEANSEARCH=1 in options.env (and it is allowlisted in the research profile)."""
+    disabled = [
+        t for t in LEAN_LSP_DISABLED if t != "lean_leansearch" or OPTIONS["LEANSEARCH"] != "1"
+    ]
     loogle_cache = HOME / "loogle"
     env = base_env(
         LEAN_PROJECT_PATH=str(WORK_PROJECT),
@@ -45,7 +49,7 @@ def lean_lsp() -> None:
         LEAN_LOOGLE_LOCAL="true",
         LEAN_LOOGLE_LOCAL_ONLY="true",
         LEAN_LOOGLE_CACHE_DIR=str(loogle_cache),
-        LEAN_MCP_DISABLED_TOOLS=",".join(LEAN_LSP_DISABLED),
+        LEAN_MCP_DISABLED_TOOLS=",".join(disabled),
     )
     binary = str(Path(sys.executable).parent / "lean-lsp-mcp")
     cmd = sandboxed([binary], env, [WORK_PROJECT, loogle_cache, SCRATCH, Path.home() / ".cache"])
