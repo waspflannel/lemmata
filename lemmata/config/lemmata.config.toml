@@ -209,7 +209,9 @@ daybreak_program_propagation = false
 # WSL, use command = "/home/<you>/.lemmata/bin/lemmata-mcp" and args = ["<server>"].
 # `-d Ubuntu` must match WSL_DISTRO in lemmata/mcp/lemmata_mcp/pins.env.
 
+# Expose MCP tools directly, including on models that default to Code Mode Only.
 [mcp_servers.lean]
+omit_tools_from = ["deferred", "code_mode"]
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean"]
 startup_timeout_sec = 120
@@ -217,6 +219,7 @@ tool_timeout_sec = 1800
 enabled_tools = ["check", "portfolio", "repair", "register_lemma", "step", "batch_check"]
 
 [mcp_servers.lean_lsp]
+omit_tools_from = ["deferred", "code_mode"]
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean_lsp"]
 startup_timeout_sec = 120
@@ -230,6 +233,7 @@ enabled_tools = [
 ]
 
 [mcp_servers.library]
+omit_tools_from = ["deferred", "code_mode"]
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "library"]
 startup_timeout_sec = 120
@@ -238,6 +242,7 @@ tool_timeout_sec = 120
 enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis", "pi_base"]
 
 [mcp_servers.compute]
+omit_tools_from = ["deferred", "code_mode"]
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "compute"]
 startup_timeout_sec = 120
@@ -249,6 +254,7 @@ enabled_tools = [
 ]
 
 [mcp_servers.verdict]
+omit_tools_from = ["deferred", "code_mode"]
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "verdict"]
 startup_timeout_sec = 120
@@ -256,6 +262,7 @@ tool_timeout_sec = 3700  # comparator may take up to an hour on a large proof
 enabled_tools = ["get_challenge", "replay_witness", "check_equivalence", "submit_verdict"]
 
 [mcp_servers.whiteboard]
+omit_tools_from = ["deferred", "code_mode"]
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "whiteboard"]
 startup_timeout_sec = 120
