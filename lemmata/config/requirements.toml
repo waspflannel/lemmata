@@ -29,7 +29,5 @@ tool_suggest = false
 apps = false
 guardianv2 = false
 guardianv3 = false
-multi_agent = false
-multi_agent_v2 = false
 memories = false
 goals = false
