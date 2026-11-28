@@ -49,6 +49,7 @@ allowed_tools = [
   # matching lean_lsp enabled_tools entry.
   # "mcp__lean_lsp/lean_leansearch",
   "mcp__verdict/get_challenge",
+  "mcp__whiteboard/goal_tree",
   "mcp__whiteboard/read",
   "mcp__whiteboard/lemma_add",
 ]
@@ -204,4 +205,4 @@ command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "whiteboard"]
 startup_timeout_sec = 120
 tool_timeout_sec = 60
-enabled_tools = ["read", "lemma_add"]
+enabled_tools = ["goal_tree", "read", "lemma_add"]

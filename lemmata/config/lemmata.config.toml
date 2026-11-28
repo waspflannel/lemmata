@@ -37,6 +37,10 @@ allowed_tools = [
   "mcp__lean/register_lemma",
   "mcp__lean/step",
   "mcp__lean/batch_check",
+  "mcp__lean/goal_split",
+  "mcp__lean/goal_close",
+  "mcp__lean/goal_refute",
+  "mcp__lean/goal_certificate",
   # lean_lsp: lean-lsp-mcp on Scratch/ files written by lean/check save_as
   "mcp__lean_lsp/lean_goal",
   "mcp__lean_lsp/lean_term_goal",
@@ -83,6 +87,7 @@ allowed_tools = [
   "mcp__verdict/check_equivalence",
   "mcp__verdict/submit_verdict",
   # whiteboard
+  "mcp__whiteboard/goal_tree",
   "mcp__whiteboard/read",
   "mcp__whiteboard/lemma_add",
   "mcp__whiteboard/lemma_update",
@@ -218,7 +223,10 @@ command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean"]
 startup_timeout_sec = 120
 tool_timeout_sec = 1800
-enabled_tools = ["check", "portfolio", "repair", "register_lemma", "step", "batch_check"]
+enabled_tools = [
+  "check", "portfolio", "repair", "register_lemma", "step", "batch_check",
+  "goal_split", "goal_close", "goal_refute", "goal_certificate",
+]
 
 [mcp_servers.lean_lsp]
 omit_tools_from = ["deferred", "code_mode"]
@@ -275,5 +283,6 @@ args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "whit
 startup_timeout_sec = 120
 tool_timeout_sec = 60
 enabled_tools = [
-  "read", "lemma_add", "lemma_update", "dead_end_add", "dead_end_find", "coverage_add",
+  "goal_tree", "read", "lemma_add", "lemma_update", "dead_end_add", "dead_end_find",
+  "coverage_add",
 ]
