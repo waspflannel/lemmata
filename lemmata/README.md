@@ -14,6 +14,7 @@ scoping notes are in `docs/lemmata/disable-list.md`.
 | `config/lemmata-research.md` | Base instructions for the research role. |
 | `config/requirements.toml` | Optional managed requirements so later config layers cannot turn the main features back on. |
 | `start.ps1`, `start.cmd` | One-command start: checks, health check, then the TUI. See [How to test](#how-to-test). |
+| `rounds.ps1`, `rounds.cmd` | Headless round runner: chains `codex exec` rounds on one challenge until a stop rule fires. See [Round runner](#round-runner). |
 | `examples/` | Sample challenge specs for `lemmata-mcp freeze`. |
 | `mcp/` | MCP servers (Lean, library, compute, verdict, whiteboard) and the WSL2 setup script. See [Math tools](#math-tools-lemmatamcp). |
 
@@ -120,6 +121,38 @@ wsl -d Ubuntu --cd ~ --exec .lemmata/bin/lemmata-mcp freeze /mnt/c/lemmata/lemma
 | n(n+1) is even for every natural n | `prove-even.json` | `Work on challenge <id>.` | PROVED (e.g. `Nat.even_mul_succ_self`), comparator-checked |
 | 2^n + 1 is prime for every n > 0 | `disprove-prime.json` | `Work on challenge <id>.` | DISPROVED by the witness n = 3 (9 = 3 * 3), replayed |
 | (off-topic) | none | `Write a Python script that renames the files in my Downloads folder.` | Refused in one sentence, no tool calls |
+
+## Round runner
+
+`rounds.cmd` runs headless rounds on one frozen challenge. Each round is one
+`codex exec --profile lemmata` that forks the previous round's thread (`-Fresh`: a new session
+per round). Run `start.cmd -Check` once first; the runner needs the ChatGPT login and never uses
+an API key.
+
+```bat
+C:\lemmata\lemmata\rounds.cmd -Challenge 5f8c55c0733a5f9e -Name giuga -Fork <thread id> -MaxRounds 5
+C:\lemmata\lemmata\rounds.cmd -Challenge <id> -Name even -DryRun   &rem write round 1 files, launch nothing
+C:\lemmata\lemmata\rounds.cmd -Challenge <id> -Name giuga -Resume  &rem continue from giuga-run.jsonl
+```
+
+Per round N it writes `<Name>-r<N>-prompt.txt`, `-launch.cmd` (rerunnable by hand), `.log` and
+`-last-message.txt` to `-OutDir` (default `%USERPROFILE%\lemmata-run`), and appends a record to
+`<Name>-run.jsonl`. It stops on the first of:
+
+| Status | Rule |
+|---|---|
+| `verdict` | an accepted PROVED or DISPROVED |
+| `no-progress` | `-NoProgressRounds` (2) consecutive rounds without goal-tree progress |
+| `max-rounds` | round `-MaxRounds` (10) finished |
+| `time-cap` | `-TimeCapHours` (12) used up; one round is killed after `-RoundCapHours` (4) |
+| `failed` | the same round exits non-zero without `turn.completed` twice |
+
+Progress, the verdict and the round prompts come from `lemmata-mcp goals snapshot` and
+`goals prompt` (the goal tree). Where that CLI is missing, progress is unknown (it never counts
+toward `no-progress`), the verdict is read from the round log's accepted `submit_verdict`
+result, and the prompt is a built-in one (or `-PromptTemplate` with `{problem}` and `{round}`).
+After every round, and at the stop, it posts `{threadId: <Name>-r<N>, status}` to the webhook in
+`-WebhookEnv`; the key is never logged.
 
 ## Math tools (`lemmata/mcp`)
 
