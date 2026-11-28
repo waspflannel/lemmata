@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+{{assets}}
+<style>
+:root {
+  --paper: #eef1ee;
+  --sheet: #fafbf9;
+  --ink: #1b2333;
+  --graphite: #586170;
+  --rule: #cfd5d9;
+  --code-bg: #e8ece9;
+  --closed: #1d6b58;
+  --refuted: #a32a40;
+  --open: #8d6100;
+  --flag: #6a4c9c;
+  --lk-keyword: #34488c;
+  --lk-tactic: #1d6b58;
+  --lk-comment: #7a828e;
+  --lk-string: #8a4b1d;
+  --lk-symbol: #34488c;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #12171f;
+    --sheet: #181e28;
+    --ink: #e1e5eb;
+    --graphite: #99a2af;
+    --rule: #2e3745;
+    --code-bg: #1f2733;
+    --closed: #5ec4a5;
+    --refuted: #f08294;
+    --open: #e2b453;
+    --flag: #b69de8;
+    --lk-keyword: #9cb1f2;
+    --lk-tactic: #5ec4a5;
+    --lk-comment: #7d8693;
+    --lk-string: #e3a774;
+    --lk-symbol: #9cb1f2;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #12171f; --sheet: #181e28; --ink: #e1e5eb; --graphite: #99a2af; --rule: #2e3745;
+  --code-bg: #1f2733; --closed: #5ec4a5; --refuted: #f08294; --open: #e2b453; --flag: #b69de8;
+  --lk-keyword: #9cb1f2; --lk-tactic: #5ec4a5; --lk-comment: #7d8693; --lk-string: #e3a774;
+  --lk-symbol: #9cb1f2; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: KaTeX_Main, "Latin Modern Roman", "CMU Serif", "Iowan Old Style", Georgia, serif;
+  font-size: 1.125rem;
+  line-height: 1.62;
+  font-kerning: normal;
+}
+code, pre, .gid, .tally b {
+  font-family: "JetBrains Mono", "Cascadia Mono", "SF Mono", Consolas, ui-monospace, monospace;
+}
+code { font-size: 0.82em; background: var(--code-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+a { color: var(--lk-keyword); }
+
+.sheet {
+  max-width: 48rem;
+  margin: 2.5rem auto;
+  padding: 3.25rem 3.5rem 2.5rem;
+  background: var(--sheet);
+  border: 1px solid var(--rule);
+}
+
+h1 {
+  font-weight: 400;
+  font-size: clamp(1.9rem, 4.6vw, 2.75rem);
+  line-height: 1.12;
+  letter-spacing: -0.012em;
+  margin: 0 0 1.6rem;
+  max-width: 34ch;
+}
+h2 {
+  font-weight: 700;
+  font-size: 1.3rem;
+  margin: 2.8rem 0 0.9rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+}
+h2 .num { min-width: 1.2rem; }
+h2 button { margin-left: auto; }
+.prose h3 { font-size: 1.12rem; margin: 1.8rem 0 0.4rem; }
+.prose h4, .prose h5, .prose h6 { font-size: 1rem; margin: 1.4rem 0 0.3rem; font-style: italic; }
+
+/* Claim as a theorem environment: bold label, italic body. */
+.claim-label { float: left; margin-right: 0.4em; }
+.claim-text { font-style: italic; margin-bottom: 0.7rem; }
+.claim-text p, .claim-text ul, .claim-text ol { margin: 0 0 0.5rem; }
+.claim-text b, .claim-text strong { font-style: normal; }
+pre {
+  margin: 0;
+  background: var(--code-bg);
+  border-radius: 3px;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  overflow-x: auto;
+  tab-size: 2;
+}
+pre.claim, pre.statement { white-space: pre-wrap; overflow-wrap: anywhere; }
+.preamble { margin-top: 0.5rem; }
+.lk-keyword { color: var(--lk-keyword); font-weight: 600; }
+.lk-tactic { color: var(--lk-tactic); }
+.lk-comment { color: var(--lk-comment); font-style: italic; }
+.lk-string { color: var(--lk-string); }
+.lk-symbol { color: var(--lk-symbol); }
+
+.verdict { margin: 1.4rem 0 0; }
+.verdict span { float: right; font-size: 1.2rem; line-height: 1.3; }
+.v-proved span, .v-proved b { color: var(--closed); }
+.v-disproved span, .v-disproved b { color: var(--refuted); }
+.v-open b { color: var(--open); }
+.v-none b { color: var(--graphite); }
+
+.tally {
+  list-style: none;
+  margin: 1.3rem 0 0;
+  padding: 0.7rem 0 0;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.6rem;
+  color: var(--graphite);
+  font-size: 0.95rem;
+}
+.tally b { color: var(--ink); font-weight: 600; font-size: 0.9rem; margin-right: 0.15rem; }
+.tally .stat-closed b { color: var(--closed); }
+.tally .stat-refuted b { color: var(--refuted); }
+.tally .stat-open_leaves b { color: var(--open); }
+.tally .stat-flagged b { color: var(--flag); }
+
+.prose { max-width: 40rem; }
+.prose p, .prose ul, .prose ol { margin: 0 0 0.95rem; }
+.prose li { margin: 0.2rem 0; }
+.prose pre { margin: 0 0 1rem; }
+.prose blockquote { margin: 0 0 1rem; padding-left: 1rem; border-left: 2px solid var(--rule); color: var(--graphite); }
+.md-raw {
+  white-space: pre-wrap;
+  background: none;
+  padding: 0;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+.katex { font-size: 1.05em; }
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.2rem 0; }
+.empty { color: var(--graphite); font-style: italic; }
+
+button {
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--graphite);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.15rem 0.6rem;
+  cursor: pointer;
+}
+button:hover { color: var(--ink); border-color: var(--graphite); }
+:focus-visible { outline: 2px solid var(--lk-keyword); outline-offset: 2px; }
+
+/* The proof tree: status marks in a gutter, a spine coloured by the goal's status. */
+.tree > details { margin-left: -0.35rem; }
+.goal { --st: var(--graphite); }
+.goal.st-closed { --st: var(--closed); }
+.goal.st-refuted { --st: var(--refuted); }
+.goal.st-open { --st: var(--open); }
+.goal.st-split { --st: var(--ink); }
+.goal > summary {
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1.7rem auto 1fr;
+  column-gap: 0.55rem;
+  align-items: baseline;
+  padding: 0.3rem 0.35rem;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.goal > summary::-webkit-details-marker { display: none; }
+.goal > summary:hover { background: var(--code-bg); }
+.mark { color: var(--st); font-size: 1.2rem; line-height: 1; text-align: center; }
+.gid { color: var(--graphite); font-size: 0.78rem; white-space: nowrap; }
+.line { min-width: 0; }
+.tag {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 0.8rem;
+  font-style: italic;
+  line-height: 1.3;
+  padding: 0 0.4rem;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  color: var(--graphite);
+  white-space: nowrap;
+}
+.tag.rel-case { color: var(--closed); }
+.tag.rel-restatement, .tag.flag { color: var(--flag); }
+.tag.rel-strengthening { color: var(--open); }
+.goal-body {
+  margin: 0.1rem 0 0.5rem 1.2rem;
+  padding: 0.25rem 0 0.2rem 1.25rem;
+  border-left: 1.5px solid color-mix(in srgb, var(--st) 55%, transparent);
+}
+.goal-body > * + * { margin-top: 0.55rem; }
+.children { margin-top: 0.7rem; }
+.cite, .flag-note { margin: 0; font-size: 0.92rem; color: var(--graphite); }
+.flag-note { color: var(--flag); font-style: italic; }
+details.source > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 0.92rem;
+  color: var(--graphite);
+  padding: 0.1rem 0;
+}
+details.source > summary::-webkit-details-marker { display: none; }
+details.source > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1rem;
+  color: var(--graphite);
+}
+details.source[open] > summary::before { transform: rotate(90deg); }
+details.source > pre { margin-top: 0.35rem; }
+@media (prefers-reduced-motion: no-preference) {
+  details.source > summary::before { transition: transform 120ms ease-out; }
+}
+
+footer {
+  margin-top: 3rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.85rem;
+  color: var(--graphite);
+}
+
+@media (max-width: 40rem) {
+  body { font-size: 1.05rem; }
+  .sheet { margin: 0; border: 0; padding: 1.75rem 1rem 1.5rem; }
+  .goal > summary { grid-template-columns: 1.4rem 1fr; }
+  .goal > summary .line { grid-column: 1 / -1; padding-left: 1.95rem; }
+  .goal-body { margin-left: 0.6rem; padding-left: 0.8rem; }
+}
+@media print {
+  body { background: none; }
+  .sheet { border: 0; margin: 0; max-width: none; }
+  h2 button { display: none; }
+}
+</style>
+</head>
+<body>
+<main class="sheet">
+<header>
+<h1 class="tex">{{title}}</h1>
+<section class="theorem" aria-label="Statement">
+<b class="claim-label">Claim.</b>
+<div class="md md-raw claim-text">{{informal}}</div>
+<pre class="lean claim">{{claim}}</pre>
+{{preamble}}
+</section>
+{{verdict}}
+<ul class="tally" aria-label="Goal tree totals">{{stats}}</ul>
+</header>
+
+<section aria-labelledby="h-explain">
+<h2 id="h-explain"><span class="num">1</span>Explanation</h2>
+<div class="prose">{{explanation}}</div>
+</section>
+
+<section aria-labelledby="h-tree">
+<h2 id="h-tree"><span class="num">2</span>Proof tree <button type="button" id="toggle-tree">Expand all</button></h2>
+<div class="tree">{{tree}}</div>
+</section>
+
+<footer>Challenge <code>{{problem}}</code>. Page written {{generated}} by <code>lemmata-mcp learn</code>. Goal states are set only by Lean checks in the lean server; the explanation is the model's account of them.</footer>
+</main>
+<script>
+(function () {
+  "use strict";
+  // Code first, so `$` inside code is left alone; then $$..$$, \[..\], \(..\), $..$.
+  var MATH = /(```[\s\S]*?```|`[^`\n]+`)|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$([^\s$](?:[^$\n]*?[^\s$\\])?)\$/g;
+  function esc(s) {
+    return s.replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function tex(src, display) {
+    try {
+      return katex.renderToString(src, { displayMode: display, throwOnError: false, output: "html" });
+    } catch (e) {
+      return esc(src);
+    }
+  }
+  // [text] or [null, tex, display] pieces.
+  function pieces(s) {
+    var out = [], last = 0, m;
+    MATH.lastIndex = 0;
+    while ((m = MATH.exec(s))) {
+      out.push([s.slice(last, m.index)]);
+      if (m[1]) out.push([m[1]]);
+      else if (m[2] != null || m[3] != null) out.push([null, m[2] != null ? m[2] : m[3], true]);
+      else out.push([null, m[4] != null ? m[4] : m[5], false]);
+      last = m.index + m[0].length;
+    }
+    out.push([s.slice(last)]);
+    return out;
+  }
+  var haveKatex = typeof katex !== "undefined";
+  if (haveKatex) {
+    document.querySelectorAll(".tex").forEach(function (el) {
+      el.innerHTML = pieces(el.textContent).map(function (p) {
+        return p[0] != null ? esc(p[0]) : tex(p[1], p[2]);
+      }).join("");
+    });
+  }
+
+  // Markdown with math: math is cut out first so marked never sees (and mangles) it.
+  function markdown(src) {
+    var math = [];
+    var md = pieces(src).map(function (p) {
+      if (p[0] != null) return p[0];
+      math.push(haveKatex ? tex(p[1], p[2]) : esc(p[2] ? "$$" + p[1] + "$$" : "$" + p[1] + "$"));
+      return "KTXPH" + (math.length - 1) + "Q";
+    }).join("");
+    return marked.parse(md).replace(/KTXPH(\d+)Q/g, function (_, i) { return math[+i]; });
+  }
+  if (typeof marked !== "undefined") {
+    marked.use({
+      mangle: false,
+      headerIds: false,
+      renderer: {
+        // Model-written Markdown: no raw HTML, no images, only http(s) and # links.
+        html: function (t) { return esc(t); },
+        image: function (href, title, text) { return esc(text || ""); },
+        link: function (href, title, text) {
+          return /^(https?:|#)/i.test(href || "") ? '<a href="' + esc(href) + '">' + text + "</a>" : text;
+        },
+        heading: function (text, level) {
+          var l = Math.min(Math.max(level + 1, 3), 6);
+          return "<h" + l + ">" + text + "</h" + l + ">";
+        },
+        code: function (code) { return '<pre class="lean">' + esc(code) + "</pre>"; }
+      }
+    });
+    document.querySelectorAll(".md").forEach(function (el) {
+      var div = document.createElement("div");
+      div.className = el.className.replace(/\bmd(-raw)?\b/g, "").trim();
+      div.innerHTML = markdown(el.textContent);
+      el.replaceWith(div);
+    });
+  }
+
+  var toggle = document.getElementById("toggle-tree");
+  var goals = document.querySelectorAll(".tree details");
+  if (!goals.length) toggle.hidden = true;
+  toggle.addEventListener("click", function () {
+    var open = toggle.textContent === "Expand all";
+    goals.forEach(function (g) { g.open = open; });
+    toggle.textContent = open ? "Collapse all" : "Expand all";
+  });
+})();
+</script>
+</body>
+</html>

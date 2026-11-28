@@ -24,7 +24,7 @@ build-backend = "setuptools.build_meta"
 packages = ["lemmata_mcp"]
 
 [tool.setuptools.package-data]
-lemmata_mcp = ["pins.env", "options.env", "DumpDecls.lean"]
+lemmata_mcp = ["pins.env", "options.env", "DumpDecls.lean", "learn.html"]
 
 [tool.ruff]
 line-length = 100
