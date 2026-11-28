@@ -13,7 +13,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from . import board
+from . import board, verdict_server
 from .cas import Sage, goal_equations, ideal_cofactors
 from .common import STANDARD_AXIOMS, WORK_PROJECT, scan_certificate
 from .repl import HEADER, IMPORTS, Kimina, Repl, ReplTimeout
@@ -75,10 +75,11 @@ server = MCPServer(
         f"`import {', '.join(IMPORTS)}`; do not write imports. Use `check` to see errors, "
         "goals at each `sorry` and the axioms of every theorem, `portfolio` to attack a "
         "`sorry`, `step` to branch from any proof state, `repair` to fix the first failing "
-        "tactic, `batch_check` for many independent snippets, and `register_lemma` to share "
-        "a finished lemma. native_decide and LeanCert's native/auto trust modes are "
-        "exploration only; `hammer` counts only through the tactic it suggests; polyrith is "
-        "unavailable."
+        "tactic, `batch_check` for many independent snippets, `register_lemma` to share "
+        "a finished lemma, and `goal_split` / `goal_close` / `goal_refute` / `goal_certificate` "
+        "to move the goal tree (see whiteboard.goal_tree) by checked steps. native_decide "
+        "and LeanCert's native/auto trust modes are exploration only; `hammer` counts only "
+        "through the tactic it suggests; polyrith is unavailable."
     ),
 )
 
@@ -132,11 +133,41 @@ def _messages(response: dict[str, Any], line_offset: int) -> list[dict[str, Any]
     ]
 
 
-def _with_preamble(code: str, use_lemmas: list[int] | None) -> tuple[str, int]:
-    if not use_lemmas:
-        return code, 0
-    preamble = board.lemma_sources(use_lemmas) + "\n\n"
-    return preamble + code, preamble.count("\n")
+def _challenge_prefix(problem: str) -> str:
+    return verdict_server._prefix(verdict_server._challenge(problem))
+
+
+def _lemmas_prefix(use_lemmas: list[int]) -> str | None:
+    """The frozen prefix of the one challenge all `use_lemmas` belong to, if there is one."""
+    problems = board.lemma_problems(use_lemmas)
+    if len(problems) != 1:
+        return None
+    try:
+        return _challenge_prefix(problems.pop())
+    except ValueError:  # not a frozen challenge (e.g. smoke tests)
+        return None
+
+
+def _with_preamble(
+    code: str, use_lemmas: list[int] | None, prefix: str | None = None
+) -> tuple[str, int]:
+    """`code` after the sources of `use_lemmas`, and the line offset of `code` in the result.
+
+    With a challenge prefix (given, or that of the lemmas' frozen challenge) the prefix is
+    emitted once, then the lemma sources and `code`, each without a pasted copy of it: two
+    sources that both start with the prefix would otherwise redefine `Claim`.
+    """
+    if prefix is None and use_lemmas:
+        prefix = _lemmas_prefix(use_lemmas)
+    if prefix is None:
+        if not use_lemmas:
+            return code, 0
+        preamble = board.lemma_sources(use_lemmas) + "\n\n"
+        return preamble + code, preamble.count("\n")
+    head, rest = board.split_prefix(code, prefix)
+    lemmas = board.lemma_sources(use_lemmas or [], prefix)
+    preamble = prefix + "\n" + (lemmas + "\n\n" if lemmas else "")
+    return preamble + rest, preamble.count("\n") - head.count("\n")
 
 
 def _parse_axioms(text: str) -> list[str] | None:
@@ -165,10 +196,14 @@ def _guard(code: str) -> None:
 
 
 def _check(
-    code: str, use_lemmas: list[int] | None, timeout: float, all_tactics: bool = False
+    code: str,
+    use_lemmas: list[int] | None,
+    timeout: float,
+    all_tactics: bool = False,
+    prefix: str | None = None,
 ) -> dict[str, Any]:
     _guard(code)
-    full, offset = _with_preamble(code, use_lemmas)
+    full, offset = _with_preamble(code, use_lemmas, prefix)
     started = time.monotonic()
     try:
         response = repl.command(full, timeout, all_tactics=all_tactics)
@@ -507,6 +542,17 @@ def repair(
     return {"fixed": final["ok"], "code": source, "history": history, "check": _public(final)}
 
 
+def _decl_types(result: dict[str, Any]) -> dict[str, str]:
+    """Type of each declaration a successful `_check` elaborated, as `#check @name` prints."""
+    types = {}
+    for name in result["axioms"]:
+        response = repl.command(f"#check @{name}", 60, env=result["_env"])
+        texts = [m["data"] for m in response.get("messages", []) if m["severity"] == "info"]
+        if texts:
+            types[name] = " ".join(texts[0].split())
+    return types
+
+
 @server.tool()
 def register_lemma(lemma_id: int, code: str, use_lemmas: list[int] | None = None) -> dict[str, Any]:
     """Check a finished lemma and mark whiteboard lemma `lemma_id` as proved.
@@ -517,17 +563,13 @@ def register_lemma(lemma_id: int, code: str, use_lemmas: list[int] | None = None
     type become searchable through the library server and reusable by everyone via
     `use_lemmas`.
     """
+    board.refuse_goal_lemma(lemma_id)
     if reason := scan_certificate(code):
         return {"registered": False, "reason": reason}
     result = _check(code, use_lemmas, 300)
     if not result["ok"]:
         return {"registered": False, "reason": "does not fully check", "check": _public(result)}
-    types = {}
-    for name in result["axioms"]:
-        response = repl.command(f"#check @{name}", 60, env=result["_env"])
-        texts = [m["data"] for m in response.get("messages", []) if m["severity"] == "info"]
-        if texts:
-            types[name] = " ".join(texts[0].split())
+    types = _decl_types(result)
     if use_lemmas:
         board.update_lemma(lemma_id, deps=use_lemmas)
     ref = board.record_proved_lemma(lemma_id, code, types)
@@ -615,3 +657,327 @@ def batch_check(snippets: list[str], timeout_s: int = 120) -> dict[str, Any]:
             for code, r, decls in zip(snippets, results, names, strict=True)
         ],
     }
+
+
+# --- goal tree --------------------------------------------------------------------------
+# Every change of goal state is backed by a Lean check run here: the server composes each
+# theorem statement from stored goal text, the worker supplies proofs only, and the check is
+# `challenge prefix + use_lemmas (prefix stripped) + theorem`, through `scan_certificate` and
+# `_check(...)["ok"]`. Upward propagation (a split goal closed by its children, a refutation
+# carried through a weaken edge) is checked the same way, as its own composite theorem.
+
+PROBE_TACTICS = "first | exact h | simpa using h | tauto | omega | (simp_all; done) | aesop"
+DELIMITER_PAIRS = {")": "(", "]": "[", "}": "{", "⟩": "⟨"}
+
+
+def _statement_guard(statement: str) -> None:
+    """A goal statement is spliced into `(…) → (…)`: one balanced term, nothing that could
+    end it early or comment out the rest of the composed theorem."""
+    if not statement.strip() or re.search(r"--|/-|:=", statement):
+        raise ValueError(f"goal statement must be one Lean term, no comments: {statement!r}")
+    stack = []
+    for char in statement:
+        if char in DELIMITER_PAIRS.values():
+            stack.append(char)
+        elif char in DELIMITER_PAIRS and (not stack or stack.pop() != DELIMITER_PAIRS[char]):
+            raise ValueError(f"unbalanced delimiters in goal statement: {statement!r}")
+    if stack:
+        raise ValueError(f"unbalanced delimiters in goal statement: {statement!r}")
+
+
+def _goal_context(problem: str, goal_id: int) -> tuple[str, dict[str, Any]]:
+    """The challenge prefix and the goal (the root is created on the first goal call)."""
+    challenge = verdict_server._challenge(problem)
+    board.ensure_root(problem, challenge["title"])
+    return verdict_server._prefix(challenge), board.live_goal(problem, goal_id)
+
+
+def _goal_lemma(
+    prefix: str,
+    name: str,
+    statement: str,
+    proof: str,
+    use_lemmas: list[int] | None,
+    timeout: float,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Check `theorem name : statement := proof` after the prefix and `use_lemmas`.
+
+    Returns (lemma record for the board, None) when it fully checks, else (None, rejection).
+    The proof must add no declaration of its own: only `name` may be declared.
+    """
+    source = f"theorem {name} : {statement} := {proof.strip()}\n"
+    if reason := scan_certificate(source):
+        return None, {"reason": reason}
+    if _decl_names(source) != [name] or NAMESPACE.search(source):
+        return None, {"reason": "the proof may not declare anything or open/close scopes"}
+    result = _check(source, use_lemmas, timeout, prefix=prefix)
+    if not result["ok"]:
+        return None, {"reason": f"`{name}` does not fully check", "check": _public(result)}
+    lemma = {
+        "name": name,
+        "statement": statement,
+        "source": source,
+        "deps": list(use_lemmas or []),
+        "types": _decl_types(result),
+    }
+    return lemma, None
+
+
+def _probe(prefix: str, goal: dict[str, Any], child: str, use_lemmas: list[int] | None) -> bool:
+    """Does a cheap tactic close `goal → child`? Then the single child is a restatement."""
+    # ponytail: cheap probe; upgrade to portfolio(explore=false) if restatements slip through
+    source = (
+        f"theorem goal_{goal['id']}_probe : ({goal['lean_statement']}) → ({child}) := by\n"
+        f"  intro h\n  {PROBE_TACTICS}\n"
+    )
+    return bool(_check(source, use_lemmas, 30, prefix=prefix).get("ok"))
+
+
+def _classify(
+    prefix: str,
+    goal: dict[str, Any],
+    statements: list[str],
+    weak_lemmas: list[dict[str, Any] | None],
+    use_lemmas: list[int] | None,
+) -> tuple[str, str]:
+    """(relation, reason) for a checked split; only `case` counts as progress."""
+    known = board.ancestor_hashes(goal["id"])
+    if len(statements) >= 2:
+        if any(board.goal_hash(s) in known for s in statements):
+            return "restatement", "a child repeats the goal or an ancestor"
+        if all(weak_lemmas):
+            return "case", "every child has a weaken proof: a genuine case split"
+        return "reduction", "some child lacks a weaken proof, so it may be harder than the goal"
+    child = statements[0]
+    if weak_lemmas[0]:
+        return "restatement", "the weaken proof makes the single child equivalent to the goal"
+    if board.goal_hash(child) in known:
+        return "restatement", "the child repeats the goal or an ancestor"
+    if decl := board.iff_declaration(goal["problem"], goal["lean_statement"], child):
+        return "restatement", f"project declaration `{decl}` states the equivalence"
+    if _probe(prefix, goal, child, use_lemmas):
+        return "restatement", "the equivalence probe proved goal → child"
+    return "strengthening", "single child, no equivalence found: it may be strictly harder"
+
+
+def _propagate_closed(
+    problem: str, prefix: str, goal_id: int, timeout: float
+) -> tuple[list[int], dict[str, Any] | None]:
+    """Close split ancestors whose live split now has every child closed, each through a
+    checked composite `theorem goal_<P>_closed : P := split child_1_closed …`."""
+    closed: list[int] = []
+    edge = board.parent_edge(goal_id)
+    while (
+        edge
+        and not edge["split"]["dead"]
+        and edge["parent"]["status"] == "split"
+        and all(c["status"] == "closed" for c in edge["children"])
+    ):
+        parent, split_lemma_id = edge["parent"], edge["split"]["lemma_id"]
+        parts = [split_lemma_id, *(c["lemma_id"] for c in edge["children"])]
+        proof = " ".join(board.lemma_row(lemma_id)["name"] for lemma_id in parts)
+        lemma, rejection = _goal_lemma(
+            prefix,
+            f"goal_{parent['id']}_closed",
+            parent["lean_statement"],
+            proof,
+            board.lemma_chain(parts),
+            timeout,
+        )
+        if rejection:
+            return closed, {"goal_id": parent["id"], **rejection}
+        board.resolve_goal(problem, parent["id"], "closed", lemma)
+        closed.append(parent["id"])
+        edge = board.parent_edge(parent["id"])
+    return closed, None
+
+
+def _propagate_refuted(
+    problem: str, prefix: str, goal_id: int, lemma_id: int, timeout: float
+) -> dict[str, Any]:
+    """Carry `¬ C` up through weaken edges (`P → C` gives `¬ P`, checked as a composite).
+    Without a weaken edge the parent's split is useless: it is marked dead and the parent
+    reopened."""
+    refuted: list[int] = []
+    edge = board.parent_edge(goal_id)
+    while edge and not edge["split"]["dead"] and edge["parent"]["status"] == "split":
+        parent = edge["parent"]
+        weak_id = edge["split"]["weaken_lemma_ids"][edge["index"]]
+        if weak_id is not None:
+            weak, child = board.lemma_row(weak_id)["name"], board.lemma_row(lemma_id)["name"]
+            lemma, _ = _goal_lemma(
+                prefix,
+                f"goal_{parent['id']}_refuted",
+                f"¬ ({parent['lean_statement']})",
+                f"fun h => {child} ({weak} h)",
+                board.lemma_chain([weak_id, lemma_id]),
+                timeout,
+            )
+            if lemma is not None:
+                lemma_id = board.resolve_goal(problem, parent["id"], "refuted", lemma)
+                refuted.append(parent["id"])
+                edge = board.parent_edge(parent["id"])
+                continue
+        board.kill_split(problem, edge["split"]["id"], parent["id"])
+        return {"refuted": refuted, "reopened": parent["id"], "dead_split": edge["split"]["id"]}
+    return {"refuted": refuted, "reopened": None, "dead_split": None}
+
+
+@server.tool()
+def goal_split(
+    problem: str,
+    goal_id: int,
+    children: list[dict[str, str]],
+    proof: str,
+    weaken_proofs: list[str | None] | None = None,
+    use_lemmas: list[int] | None = None,
+    timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Split open goal P (ids from `whiteboard.goal_tree`) into children C1..Ck by a
+    Lean-checked reduction.
+
+    children: [{"lean_statement": "<Prop, elaborated after the challenge prefix>",
+    "informal": "..."}]. proof: proves `(C1) → … → (Ck) → (P)`. weaken_proofs, one per child
+    (null where absent): proves `(P) → (Ci)`. Relation: `case` (k ≥ 2, every child has a
+    weaken proof: progress); `reduction` (k ≥ 2, some child without one); `restatement` (a
+    single child equivalent to P, or a child repeating an ancestor: flagged, no progress);
+    `strengthening` (a single child, no equivalence found: flagged, no progress). Nothing
+    is written unless every proof checks.
+    """
+    prefix, goal = _goal_context(problem, goal_id)
+    if goal["status"] != "open":
+        raise ValueError(f"goal {goal_id} is {goal['status']}; only open goals split")
+    statements = [c["lean_statement"] for c in children]
+    if not statements:
+        raise ValueError("a split needs at least one child")
+    for statement in statements:
+        _statement_guard(statement)
+    if len({board.goal_hash(s) for s in statements}) < len(statements):
+        raise ValueError("two children have the same statement")
+    weaken = weaken_proofs or [None] * len(statements)
+    if len(weaken) != len(statements):
+        raise ValueError("weaken_proofs needs one entry (or null) per child")
+    n = board.split_count(goal_id) + 1
+    target = goal["lean_statement"]
+    split_lemma, rejection = _goal_lemma(
+        prefix,
+        f"goal_{goal_id}_split{n}",
+        " → ".join(f"({s})" for s in [*statements, target]),
+        proof,
+        use_lemmas,
+        timeout_s,
+    )
+    if rejection:
+        return {"split": False, **rejection}
+    weak_lemmas: list[dict[str, Any] | None] = []
+    for i, (statement, weak_proof) in enumerate(zip(statements, weaken, strict=True), 1):
+        if weak_proof is None:
+            weak_lemmas.append(None)
+            continue
+        lemma, rejection = _goal_lemma(
+            prefix,
+            f"goal_{goal_id}_weak{n}_{i}",
+            f"({target}) → ({statement})",
+            weak_proof,
+            use_lemmas,
+            timeout_s,
+        )
+        if rejection:
+            return {"split": False, "child": i, **rejection}
+        weak_lemmas.append(lemma)
+    relation, reason = _classify(prefix, goal, statements, weak_lemmas, use_lemmas)
+    flag = relation if relation in ("restatement", "strengthening") else None
+    rows = board.add_split(problem, goal_id, relation, flag, children, split_lemma, weak_lemmas)
+    return {
+        "split": True,
+        "split_id": rows["split_id"],
+        "relation": relation,
+        "flag": flag,
+        "children": rows["children"],
+        "progress": relation == "case",
+        "reason": reason,
+    }
+
+
+@server.tool()
+def goal_close(
+    problem: str,
+    goal_id: int,
+    proof: str,
+    use_lemmas: list[int] | None = None,
+    timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Close goal C with a Lean proof of `theorem goal_<id>_closed : C`.
+
+    A split goal whose live split then has every child closed closes too (checked as a
+    composite of the split lemma and the children's lemmas), recursively up to the root.
+    """
+    prefix, goal = _goal_context(problem, goal_id)
+    lemma, rejection = _goal_lemma(
+        prefix, f"goal_{goal_id}_closed", goal["lean_statement"], proof, use_lemmas, timeout_s
+    )
+    if rejection:
+        return {"closed": [], **rejection}
+    board.resolve_goal(problem, goal_id, "closed", lemma)
+    above, stuck = _propagate_closed(problem, prefix, goal_id, timeout_s)
+    result: dict[str, Any] = {
+        "closed": [goal_id, *above],
+        "root_closed": board.root_goal(problem)["status"] == "closed",
+    }
+    if stuck:  # e.g. a timeout: the worker can close that parent with goal_close directly
+        result["propagation_failed"] = stuck
+    return result
+
+
+@server.tool()
+def goal_refute(
+    problem: str,
+    goal_id: int,
+    proof: str,
+    use_lemmas: list[int] | None = None,
+    timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Refute goal C with a Lean proof of `theorem goal_<id>_refuted : ¬ (C)`.
+
+    Through a weaken edge (`P → C`) the parent is refuted too (checked composite), and so
+    on upward. Otherwise the parent's split is marked dead and the parent reopened. A
+    coverage row with `lemma_refuted` never refutes a goal: it is not a Lean proof.
+    """
+    prefix, goal = _goal_context(problem, goal_id)
+    lemma, rejection = _goal_lemma(
+        prefix,
+        f"goal_{goal_id}_refuted",
+        f"¬ ({goal['lean_statement']})",
+        proof,
+        use_lemmas,
+        timeout_s,
+    )
+    if rejection:
+        return {"refuted": [], **rejection}
+    lemma_id = board.resolve_goal(problem, goal_id, "refuted", lemma)
+    above = _propagate_refuted(problem, prefix, goal_id, lemma_id, timeout_s)
+    return {
+        **above,
+        "refuted": [goal_id, *above["refuted"]],
+        "root_refuted": board.root_goal(problem)["status"] == "refuted",
+    }
+
+
+@server.tool()
+def goal_certificate(problem: str) -> dict[str, Any]:
+    """The verdict certificate once the root goal is closed (PROVED) or refuted (DISPROVED):
+    the goal lemmas and everything they were checked against, in dependency order and
+    without the challenge prefix, ending in `theorem claim : Claim := …` (or `claim_neg`).
+    Pass `proof` to `verdict.submit_verdict` unchanged: comparator is the judge.
+    """
+    root = board.root_goal(problem)
+    if root is None or root["status"] not in ("closed", "refuted"):
+        status = root["status"] if root else "not created yet"
+        return {"verdict": None, "reason": f"the root goal is {status}"}
+    name = board.lemma_row(root["lemma_id"])["name"]
+    body = board.lemma_sources(board.lemma_chain([root["lemma_id"]]), _challenge_prefix(problem))
+    if root["status"] == "closed":
+        verdict, final = "PROVED", f"theorem claim : Claim := {name}"
+    else:
+        verdict, final = "DISPROVED", f"theorem claim_neg : ¬ Claim := {name}"
+    return {"verdict": verdict, "proof": f"{body}\n\n{final}\n"}
