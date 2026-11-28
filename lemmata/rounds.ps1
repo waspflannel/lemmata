@@ -17,6 +17,8 @@ round failing twice (failed). Progress and the verdict come from `lemmata-mcp go
 (goal tree). Without the goals CLI, progress is unknown (never counts as no progress) and the
 verdict is read from the round log's accepted submit_verdict result.
 
+-Resume continues from the last successful round's thread; the time cap restarts on -Resume.
+
 Runs only on the ChatGPT login in %USERPROFILE%\.lemmata; API keys are removed from the
 environment, and the runner stops if the login is not ChatGPT.
 
@@ -31,22 +33,22 @@ param(
     [Parameter(Mandatory)][string]$Name,
     [string]$Fork,
     [switch]$Fresh,
-    [int]$MaxRounds = 10,
-    [int]$NoProgressRounds = 2,
-    [double]$TimeCapHours = 12,
-    [double]$RoundCapHours = 4,
+    [ValidateRange(1, 1000)][int]$MaxRounds = 10,
+    [ValidateRange(0, 1000)][int]$NoProgressRounds = 2,
+    [ValidateRange(0.01, 1000)][double]$TimeCapHours = 12,
+    [ValidateRange(0.01, 1000)][double]$RoundCapHours = 4,
     [string]$Model = 'gpt-6.2-astra',
     [string]$Effort = 'max',
-    [string]$OutDir = 'C:\Users\jaden\lemmata-run',
+    [string]$OutDir = (Join-Path $env:USERPROFILE 'lemmata-run'),
     [string]$PromptTemplate,
     [string]$FirstPrompt,
-    [string]$WebhookEnv = 'C:\Users\jaden\lemmata-run\t3_webhook.env',
+    [string]$WebhookEnv = (Join-Path $env:USERPROFILE 'lemmata-run\t3_webhook.env'),
     [switch]$Resume,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
-# wsl.exe passes the Linux program's UTF-8 bytes through; decode them as UTF-8 (blocker 4).
+# wsl.exe passes the Linux program's UTF-8 bytes through; decode them as UTF-8.
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $utf8 = New-Object Text.UTF8Encoding($false)
 
@@ -60,7 +62,7 @@ if ($Fork -and $Fresh) { throw 'Use -Fork or -Fresh, not both' }
 foreach ($file in @($PromptTemplate, $FirstPrompt)) {
     if ($file -and -not (Test-Path -LiteralPath $file)) { throw "No such file: $file" }
 }
-New-Item -ItemType Directory -Force $OutDir | Out-Null
+$OutDir = (New-Item -ItemType Directory -Force $OutDir).FullName
 $runLog = Join-Path $OutDir "$Name-runner.log"
 $runJsonl = Join-Path $OutDir "$Name-run.jsonl"
 
@@ -139,12 +141,16 @@ function Get-RoundPrompt([int]$N) {
     $text.Replace('{problem}', $Challenge).Replace('{round}', "$N")
 }
 
-# --- Round log parsing (blockers 5 and 6) ------------------------------------------
+# --- Round log parsing ---------------------------------------------------------------
+# A retry appends to the same log, so only the last launch attempt counts. Within it, the first
+# thread.started is the next fork target; `error` items are noise and ignored.
 function Read-RoundLog([string]$Log) {
     $result = @{ thread = $null; completed = $false; verdict = $null }
     if (-not (Test-Path $Log)) { return $result }
     foreach ($line in [IO.File]::ReadLines($Log)) {
-        if (-not $result.thread -and $line.Contains('"type":"thread.started"')) {
+        if ($line.StartsWith('===== ROUND_LAUNCH')) {
+            $result = @{ thread = $null; completed = $false; verdict = $null }
+        } elseif (-not $result.thread -and $line.Contains('"type":"thread.started"')) {
             try { $result.thread = ($line | ConvertFrom-Json).thread_id } catch { }
         } elseif ($line.StartsWith('{"type":"turn.completed"')) {
             $result.completed = $true
@@ -174,8 +180,6 @@ function Send-Webhook([string]$ThreadId, [string]$Status) {
         Write-Log "webhook posted ($Status)"
     } catch {
         Write-Log "webhook failed: $($_.Exception.Message)"
-    } finally {
-        Remove-Variable k -ErrorAction SilentlyContinue
     }
 }
 
@@ -185,9 +189,12 @@ $forkFrom = $Fork
 $noProgress = 0
 if ($Resume) {
     if (-not (Test-Path $runJsonl)) { throw "Nothing to resume: $runJsonl not found" }
-    $records = @([IO.File]::ReadAllLines($runJsonl, $utf8) | Where-Object { $_.Trim() } |
-        ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.round })
-    $last = $records | Where-Object { $_.thread_id } | Select-Object -Last 1
+    $all = @([IO.File]::ReadAllLines($runJsonl, $utf8) | Where-Object { $_.Trim() } |
+        ForEach-Object { $_ | ConvertFrom-Json })
+    $lastFinal = $all | Where-Object { $_.final } | Select-Object -Last 1
+    if ($lastFinal -and $lastFinal.final -eq 'verdict') { throw 'Run already ended with a verdict' }
+    $records = @($all | Where-Object { $_.round })
+    $last = $records | Where-Object { $_.thread_id -and $_.failed -ne $true } | Select-Object -Last 1
     if (-not $last) { throw "No round with a thread id in $runJsonl" }
     $round = [int]$last.round + 1
     $forkFrom = $last.thread_id
@@ -203,6 +210,7 @@ if ($Fresh) { $forkFrom = $null }
 $deadline = (Get-Date).AddHours($TimeCapHours)
 $failures = 0
 $status = $null
+$lastRound = 0
 Write-Log "run $Name on $Challenge (max $MaxRounds rounds, no-progress $NoProgressRounds, cap ${TimeCapHours}h, round cap ${RoundCapHours}h, $(if ($Fresh) { 'fresh' } else { 'fork' }) mode)"
 
 while (-not $status) {
@@ -218,7 +226,11 @@ while (-not $status) {
     $log = "$base.log"
     $lastMessage = "$base-last-message.txt"
 
-    if (-not $DryRun) { $null = Get-Snapshot $round 'begin' $forkFrom }
+    $begin = if (-not $DryRun) { Get-Snapshot $round 'begin' $forkFrom }
+    if ($begin -and $begin.verdict -and $begin.verdict.accepted -and $begin.verdict.verdict -in 'PROVED', 'DISPROVED') {
+        Write-Log "already accepted $($begin.verdict.verdict) before round ${round}: $($begin.verdict.reason)"
+        $status = 'verdict'; break
+    }
     [IO.File]::WriteAllText($promptFile, (Get-RoundPrompt $round), $utf8)
 
     # The proven redirection from the hand-made rounds: codex reads the prompt file on stdin.
@@ -239,6 +251,7 @@ while (-not $status) {
     )
     [IO.File]::WriteAllText($launch, ($cmdLines -join "`r`n") + "`r`n", $utf8)
 
+    $lastRound = $round
     if ($DryRun) {
         Write-Log "dry run: round $round prompt $promptFile"
         Write-Log "dry run: launch $launch"
@@ -253,16 +266,27 @@ while (-not $status) {
     $null = $proc.Handle  # PS 5.1 needs the handle cached for ExitCode
     $killed = $false
     try {
-        if (-not $proc.WaitForExit([int][Math]::Min($roundMs, [int]::MaxValue))) {
-            & taskkill.exe /PID $proc.Id /T /F | Out-Null
-            $proc.WaitForExit()
-            $killed = $true
-            [IO.File]::AppendAllText($log, "ROUND_KILLED $((Get-Date).ToString('o'))`r`n", $utf8)
-            Write-Log "ROUND_KILLED round $round after the time cap"
+        # Short slices so Ctrl+C can interrupt the wait.
+        $roundEnd = (Get-Date).AddMilliseconds($roundMs)
+        while (-not $proc.WaitForExit(2000)) {
+            if ((Get-Date) -ge $roundEnd) {
+                & taskkill.exe /PID $proc.Id /T /F | Out-Null
+                $proc.WaitForExit()
+                $killed = $true
+                break
+            }
         }
     } finally {
         # Ctrl+C or an error in the runner must not leave codex running.
         if (-not $proc.HasExited) { & taskkill.exe /PID $proc.Id /T /F | Out-Null }
+    }
+    # Killed MCP children (wsl.exe) hold the inherited log handle for a few seconds.
+    for ($i = 0; $i -lt 30; $i++) {
+        try { [IO.File]::Open($log, 'OpenOrCreate', 'ReadWrite', 'None').Dispose(); break } catch { Start-Sleep 1 }
+    }
+    if ($killed) {
+        [IO.File]::AppendAllText($log, "ROUND_KILLED $((Get-Date).ToString('o'))`r`n", $utf8)
+        Write-Log "ROUND_KILLED round $round after the time cap"
     }
     $exitCode = $proc.ExitCode
     $parsed = Read-RoundLog $log
@@ -280,17 +304,19 @@ while (-not $status) {
     $progress = if ($snapshot) { $snapshot.progress } else { $null }
     Write-Log "round $round end: exit $exitCode, killed $killed, turn.completed $($parsed.completed), thread $($parsed.thread), progress $(if ($null -eq $progress) { 'unknown' } else { $progress })"
 
-    if ($failed) {
-        $failures++
-        if ($failures -ge 2) { $status = 'failed'; break }
-        Write-Log "round $round failed; retrying once"
-        continue
-    }
-    $failures = 0
+    # An accepted verdict wins over a failed exit.
     if ($verdict -and $verdict.accepted -and $verdict.verdict -in 'PROVED', 'DISPROVED') {
         Write-Log "accepted $($verdict.verdict): $($verdict.reason)"
         $status = 'verdict'; break
     }
+    if ($failed) {
+        $failures++
+        if ($failures -ge 2) { $status = 'failed'; break }
+        Write-Log "round $round failed; retrying once"
+        Send-Webhook "$Name-r$round" 'round-failed'
+        continue
+    }
+    $failures = 0
     if ($killed -and $cappedByTotal) { $status = 'time-cap'; break }
     if ($progress -eq $true) { $noProgress = 0 }
     elseif ($progress -eq $false) { $noProgress++ }
@@ -302,7 +328,6 @@ while (-not $status) {
     $round++
 }
 
-$lastRound = [Math]::Min($round, $MaxRounds)
 if (-not $DryRun) {
     [IO.File]::AppendAllText($runJsonl, (ConvertTo-Json ([ordered]@{ final = $status; last_round = $lastRound; ended = (Get-Date).ToString('o') }) -Compress) + "`n", $utf8)
 }

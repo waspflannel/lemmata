@@ -136,7 +136,7 @@ C:\lemmata\lemmata\rounds.cmd -Challenge <id> -Name giuga -Resume  &rem continue
 ```
 
 Per round N it writes `<Name>-r<N>-prompt.txt`, `-launch.cmd` (rerunnable by hand), `.log` and
-`-last-message.txt` to `-OutDir` (default `C:\Users\jaden\lemmata-run`), and appends a record to
+`-last-message.txt` to `-OutDir` (default `%USERPROFILE%\lemmata-run`), and appends a record to
 `<Name>-run.jsonl`. It stops on the first of:
 
 | Status | Rule |
