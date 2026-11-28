@@ -14,6 +14,7 @@ scoping notes are in `docs/lemmata/disable-list.md`.
 | `config/lemmata-research.md` | Base instructions for the research role. |
 | `config/requirements.toml` | Optional managed requirements so later config layers cannot turn the main features back on. |
 | `start.ps1`, `start.cmd` | One-command start: checks, health check, then the TUI. See [How to test](#how-to-test). |
+| `rounds.ps1`, `rounds.cmd` | Headless round runner: chains `codex exec` rounds on one challenge until a stop rule fires. See [Round runner](#round-runner). |
 | `examples/` | Sample challenge specs for `lemmata-mcp freeze`. |
 | `mcp/` | MCP servers (Lean, library, compute, verdict, whiteboard) and the WSL2 setup script. See [Math tools](#math-tools-lemmatamcp). |
 
@@ -121,6 +122,38 @@ wsl -d Ubuntu --cd ~ --exec .lemmata/bin/lemmata-mcp freeze /mnt/c/lemmata/lemma
 | 2^n + 1 is prime for every n > 0 | `disprove-prime.json` | `Work on challenge <id>.` | DISPROVED by the witness n = 3 (9 = 3 * 3), replayed |
 | (off-topic) | none | `Write a Python script that renames the files in my Downloads folder.` | Refused in one sentence, no tool calls |
 
+## Round runner
+
+`rounds.cmd` runs headless rounds on one frozen challenge. Each round is one
+`codex exec --profile lemmata` that forks the previous round's thread (`-Fresh`: a new session
+per round). Run `start.cmd -Check` once first; the runner needs the ChatGPT login and never uses
+an API key.
+
+```bat
+C:\lemmata\lemmata\rounds.cmd -Challenge 5f8c55c0733a5f9e -Name giuga -Fork <thread id> -MaxRounds 5
+C:\lemmata\lemmata\rounds.cmd -Challenge <id> -Name even -DryRun   &rem write round 1 files, launch nothing
+C:\lemmata\lemmata\rounds.cmd -Challenge <id> -Name giuga -Resume  &rem continue from giuga-run.jsonl
+```
+
+Per round N it writes `<Name>-r<N>-prompt.txt`, `-launch.cmd` (rerunnable by hand), `.log` and
+`-last-message.txt` to `-OutDir` (default `%USERPROFILE%\lemmata-run`), and appends a record to
+`<Name>-run.jsonl`. It stops on the first of:
+
+| Status | Rule |
+|---|---|
+| `verdict` | an accepted PROVED or DISPROVED |
+| `no-progress` | `-NoProgressRounds` (2) consecutive rounds without goal-tree progress |
+| `max-rounds` | round `-MaxRounds` (10) finished |
+| `time-cap` | `-TimeCapHours` (12) used up; one round is killed after `-RoundCapHours` (4) |
+| `failed` | the same round exits non-zero without `turn.completed` twice |
+
+Progress, the verdict and the round prompts come from `lemmata-mcp goals snapshot` and
+`goals prompt` (the goal tree). Where that CLI is missing, progress is unknown (it never counts
+toward `no-progress`), the verdict is read from the round log's accepted `submit_verdict`
+result, and the prompt is a built-in one (or `-PromptTemplate` with `{problem}` and `{round}`).
+After every round, and at the stop, it posts `{threadId: <Name>-r<N>, status}` to the webhook in
+`-WebhookEnv`; the key is never logged.
+
 ## Math tools (`lemmata/mcp`)
 
 Five Python MCP servers plus upstream [lean-lsp-mcp](https://github.com/oOo0oOo/lean-lsp-mcp),
@@ -204,14 +237,21 @@ command, not an MCP tool, so workers never see its score.
 | Server | Tools | What it does |
 |---|---|---|
 | `verdict` | `get_challenge`, `replay_witness`, `check_equivalence`, `submit_verdict` | Frozen challenges (SQLite triggers refuse UPDATE/DELETE). PROVED = `theorem claim : Claim` judged by [comparator](https://github.com/leanprover/comparator) against the frozen `Challenge.lean`, axioms limited to propext/Classical.choice/Quot.sound. DISPROVED = comparator-checked `claim_neg : ¬ Claim`, or a witness replayed against the frozen Python predicate. UNRESOLVED needs a summary. Anything else is rejected. |
-| `lean` | `check`, `portfolio`, `repair`, `register_lemma`, `step`, `batch_check` | One warm leanprover-community/repl with `import Mathlib` (+ `Hammer`, `LeanCert.Tactic`) loaded once. Goals at each `sorry` and before each tactic, axioms per theorem, proof-state branching (`step`), bounded tactic portfolio (Duper, hammer, LeanCert kernel mode included), multi-attempt repair, batch checks (opt-in Kimina pool), sharing proved lemmas. |
+| `lean` | `check`, `portfolio`, `repair`, `register_lemma`, `step`, `batch_check`, `goal_split`, `goal_close`, `goal_refute`, `goal_certificate` | One warm leanprover-community/repl with `import Mathlib` (+ `Hammer`, `LeanCert.Tactic`) loaded once. Goals at each `sorry` and before each tactic, axioms per theorem, proof-state branching (`step`), bounded tactic portfolio (Duper, hammer, LeanCert kernel mode included), multi-attempt repair, batch checks (opt-in Kimina pool), sharing proved lemmas, and the goal tree: Lean-checked splits, closes and refutations of goals, and the certificate once the root is decided. |
 | `lean_lsp` | `lean_goal`, `lean_multi_attempt`, `lean_loogle`, ... (15 allowlisted) | lean-lsp-mcp on the work project, for files written by `check(save_as=...)`. Local Loogle only; network tools and `lean_build` are disabled; its REPL mode is off (the one warm REPL is `lean`'s). |
 | `library` | `search_decls`, `decl_info`, `formal_conjectures`, `oeis`, `pi_base`, `lmfdb` | FTS index over every Mathlib/Batteries/core declaration (full type, `import`, package revision) plus project-proved lemmas; Formal Conjectures at a pinned commit; OEIS from local data (HTTP fallback); pi-Base at a pinned commit with forward-chaining deduction; LMFDB read-only API (research profile only). |
 | `compute` | `enumerate`, `graph_search`, `local_search`, `sat_solve`, `sage`, `gap`, `pari`, `macaulay2`, `snappy`, `mace4`, `ideal_cofactors`, `interval_sign`, `exact_lp`, `sos_certificate`, `pslq`, `conjecture_mine`, `evolve` | Size-ordered symmetry-aware integer search with Plausible-style shrinking; geng graph search (or a saved graph6 list); simulated annealing; CaDiCaL + DRAT-trim; warm Sage worker (also SnapPy); GAP + SmallGrp, PARI/GP, Macaulay2 and Mace4 CLIs; Groebner cofactors for `linear_combination`; python-flint Arb signs; SoPlex exact LP; CSDP sum-of-squares certificates; mpmath PSLQ; TxGraffiti-style conjecture mining; OpenEvolve-style program evolution. |
-| `whiteboard` | `read`, `lemma_add`, `lemma_update`, `dead_end_add`, `dead_end_find`, `coverage_add` | Shared SQLite (WAL): lemma DAG, dead-end memory, refutation coverage. |
+| `whiteboard` | `goal_tree`, `read`, `lemma_add`, `lemma_update`, `dead_end_add`, `dead_end_find`, `coverage_add` | Shared SQLite (WAL): goal tree (read-only here), lemma DAG, dead-end memory, refutation coverage. |
 
 Details that matter for trust:
 
+- **Goal tree.** Goal status is set only by the lean server's goal tools, each change backed by a
+  Lean check of a theorem whose statement the server composes from stored goal text (the worker
+  supplies proofs only). Closing a split goal from its children and carrying a refutation up a
+  weaken edge are checked as composite theorems too. A coverage row never closes or refutes a goal.
+  Goal lemmas are owned by the lean server: `register_lemma`, `lemma_update` and `coverage_add` refuse them.
+  The restatement probe (a few cheap tactics on `P → C`) is a filter for progress accounting, not
+  a proof of non-equivalence. `goal_certificate` only assembles text: comparator still judges it.
 - **Frozen statement.** A challenge is Lean imports + preamble + `def Claim : Prop := ...`, with
   `theorem claim : Claim` and `theorem claim_neg : ¬ Claim` as the two targets. Workers submit
   only the text after that prefix; the server prepends the frozen prefix, so definitions cannot drift.

@@ -37,6 +37,10 @@ allowed_tools = [
   "mcp__lean/register_lemma",
   "mcp__lean/step",
   "mcp__lean/batch_check",
+  "mcp__lean/goal_split",
+  "mcp__lean/goal_close",
+  "mcp__lean/goal_refute",
+  "mcp__lean/goal_certificate",
   # lean_lsp: lean-lsp-mcp on Scratch/ files written by lean/check save_as
   "mcp__lean_lsp/lean_goal",
   "mcp__lean_lsp/lean_term_goal",
@@ -83,6 +87,7 @@ allowed_tools = [
   "mcp__verdict/check_equivalence",
   "mcp__verdict/submit_verdict",
   # whiteboard
+  "mcp__whiteboard/goal_tree",
   "mcp__whiteboard/read",
   "mcp__whiteboard/lemma_add",
   "mcp__whiteboard/lemma_update",
@@ -209,14 +214,23 @@ daybreak_program_propagation = false
 # WSL, use command = "/home/<you>/.lemmata/bin/lemmata-mcp" and args = ["<server>"].
 # `-d Ubuntu` must match WSL_DISTRO in lemmata/mcp/lemmata_mcp/pins.env.
 
+# Expose MCP tools directly, including on models that default to Code Mode Only.
+# Approve calls to these local servers; enabled_tools and allowed_tools still apply.
 [mcp_servers.lean]
+omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean"]
 startup_timeout_sec = 120
 tool_timeout_sec = 1800
-enabled_tools = ["check", "portfolio", "repair", "register_lemma", "step", "batch_check"]
+enabled_tools = [
+  "check", "portfolio", "repair", "register_lemma", "step", "batch_check",
+  "goal_split", "goal_close", "goal_refute", "goal_certificate",
+]
 
 [mcp_servers.lean_lsp]
+omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "lean_lsp"]
 startup_timeout_sec = 120
@@ -230,6 +244,8 @@ enabled_tools = [
 ]
 
 [mcp_servers.library]
+omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "library"]
 startup_timeout_sec = 120
@@ -238,6 +254,8 @@ tool_timeout_sec = 120
 enabled_tools = ["search_decls", "decl_info", "formal_conjectures", "oeis", "pi_base"]
 
 [mcp_servers.compute]
+omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "compute"]
 startup_timeout_sec = 120
@@ -249,6 +267,8 @@ enabled_tools = [
 ]
 
 [mcp_servers.verdict]
+omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "verdict"]
 startup_timeout_sec = 120
@@ -256,10 +276,13 @@ tool_timeout_sec = 3700  # comparator may take up to an hour on a large proof
 enabled_tools = ["get_challenge", "replay_witness", "check_equivalence", "submit_verdict"]
 
 [mcp_servers.whiteboard]
+omit_tools_from = ["deferred", "code_mode"]
+default_tools_approval_mode = "approve"
 command = "wsl.exe"
 args = ["-d", "Ubuntu", "--cd", "~", "--exec", ".lemmata/bin/lemmata-mcp", "whiteboard"]
 startup_timeout_sec = 120
 tool_timeout_sec = 60
 enabled_tools = [
-  "read", "lemma_add", "lemma_update", "dead_end_add", "dead_end_find", "coverage_add",
+  "goal_tree", "read", "lemma_add", "lemma_update", "dead_end_add", "dead_end_find",
+  "coverage_add",
 ]
