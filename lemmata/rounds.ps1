@@ -19,6 +19,10 @@ verdict is read from the round log's accepted submit_verdict result.
 
 -Resume continues from the last successful round's thread; the time cap restarts on -Resume.
 
+-Learn: after a verdict, no-progress or max-rounds stop, one more fork of the last thread writes
+an explanation (<Name>-learn.md, prompt from `goals prompt --learn`), then `lemmata-mcp learn`
+renders <Name>-learn.html, a self-contained page with the goal tree and Lean sources.
+
 Runs only on the ChatGPT login in %USERPROFILE%\.lemmata; API keys are removed from the
 environment, and the runner stops if the login is not ChatGPT.
 
@@ -27,6 +31,9 @@ lemmata\rounds.cmd -Challenge 5f8c55c0733a5f9e -Name giuga -Fork 01a21f84-1721-7
 
 .EXAMPLE
 lemmata\rounds.cmd -Challenge <id> -Name even -MaxRounds 2 -DryRun   # write round 1 files, launch nothing
+
+.EXAMPLE
+lemmata\rounds.cmd -Challenge <id> -Name even -Learn -DryRun   # also write the Learn step's files
 #>
 param(
     [Parameter(Mandatory)][string]$Challenge,
@@ -44,6 +51,7 @@ param(
     [string]$FirstPrompt,
     [string]$WebhookEnv = (Join-Path $env:USERPROFILE 'lemmata-run\t3_webhook.env'),
     [switch]$Resume,
+    [switch]$Learn,
     [switch]$DryRun
 )
 
@@ -101,12 +109,14 @@ if ($loginText -notmatch 'Logged in using ChatGPT') {
 
 # --- WSL side: lemmata-mcp goals (goal tree CLI) ------------------------------------
 # Returns stdout lines, or $null when the command fails or does not exist yet.
-function Invoke-Goals([string[]]$GoalArgs) {
+function Invoke-Mcp([string[]]$McpArgs) {
     $ErrorActionPreference = 'Continue'
-    $out = & wsl.exe -d $distro --cd '~' --exec .lemmata/bin/lemmata-mcp goals @GoalArgs 2>$null
+    $out = & wsl.exe -d $distro --cd '~' --exec .lemmata/bin/lemmata-mcp @McpArgs 2>$null
     if ($LASTEXITCODE -ne 0) { return $null }
     , @($out | ForEach-Object { "$_" })
 }
+
+function Invoke-Goals([string[]]$GoalArgs) { Invoke-Mcp (@('goals') + $GoalArgs) }
 
 function Get-Snapshot([int]$N, [string]$Phase, [string]$Thread) {
     $goalArgs = @('snapshot', $Challenge, '--round', "$N", '--phase', $Phase)
@@ -167,6 +177,55 @@ function Read-RoundLog([string]$Log) {
     $result
 }
 
+# --- Launch (the proven redirection from the hand-made rounds: codex reads the prompt on stdin)
+function Write-LaunchCmd([string]$Path, [string]$Marker, [string]$PromptFile, [string]$LastMessage, [string]$Log, [string]$ForkId) {
+    $forkPart = if ($ForkId) { " fork $ForkId" } else { '' }
+    $lines = @(
+        '@echo off'
+        'setlocal'
+        "set CODEX_HOME=$codexHome"
+        'set OPENAI_API_KEY='
+        'set CODEX_API_KEY='
+        "cd /d `"$work`""
+        "echo.>> `"$Log`""
+        "echo ===== $Marker START_LOCAL=%DATE% %TIME% =====>> `"$Log`""
+        "`"$codex`" exec --profile lemmata --model $Model -c model_reasoning_effort=$Effort --cd `"$work`" --skip-git-repo-check --color never --json -o `"$LastMessage`"$forkPart - < `"$PromptFile`" >> `"$Log`" 2>&1"
+        'set RC=%ERRORLEVEL%'
+        "echo ROUND_EXIT_CODE=%RC% END_LOCAL=%DATE% %TIME%>> `"$Log`""
+        'exit %RC%'
+    )
+    [IO.File]::WriteAllText($Path, ($lines -join "`r`n") + "`r`n", $utf8)
+    $lines
+}
+
+# Runs a launch file for at most $Ms milliseconds; returns @{ exit; killed }.
+function Invoke-Launch([string]$Launch, [string]$Log, [double]$Ms) {
+    $proc = Start-Process cmd.exe -ArgumentList '/c', "`"$Launch`"" -PassThru -NoNewWindow
+    $null = $proc.Handle  # PS 5.1 needs the handle cached for ExitCode
+    $killed = $false
+    try {
+        # Short slices so Ctrl+C can interrupt the wait.
+        $end = (Get-Date).AddMilliseconds($Ms)
+        while (-not $proc.WaitForExit(2000)) {
+            if ((Get-Date) -ge $end) {
+                & taskkill.exe /PID $proc.Id /T /F | Out-Null
+                $proc.WaitForExit()
+                $killed = $true
+                break
+            }
+        }
+    } finally {
+        # Ctrl+C or an error in the runner must not leave codex running.
+        if (-not $proc.HasExited) { & taskkill.exe /PID $proc.Id /T /F | Out-Null }
+    }
+    # Killed MCP children (wsl.exe) hold the inherited log handle for a few seconds.
+    for ($i = 0; $i -lt 30; $i++) {
+        try { [IO.File]::Open($Log, 'OpenOrCreate', 'ReadWrite', 'None').Dispose(); break } catch { Start-Sleep 1 }
+    }
+    if ($killed) { [IO.File]::AppendAllText($Log, "ROUND_KILLED $((Get-Date).ToString('o'))`r`n", $utf8) }
+    @{ exit = $proc.ExitCode; killed = $killed }
+}
+
 # --- Webhook (never prints the key or headers) -------------------------------------
 function Send-Webhook([string]$ThreadId, [string]$Status) {
     if ($DryRun) { Write-Log "dry run: would post webhook $ThreadId $Status"; return }
@@ -204,6 +263,7 @@ if ($Resume) {
     }
     Write-Log "resuming at round $round from thread $forkFrom ($noProgress no-progress rounds so far)"
 }
+$lastThread = $forkFrom  # the Learn step forks the newest thread, also in -Fresh mode
 if ($Fresh) { $forkFrom = $null }
 
 # --- Loop --------------------------------------------------------------------------
@@ -232,24 +292,7 @@ while (-not $status) {
         $status = 'verdict'; break
     }
     [IO.File]::WriteAllText($promptFile, (Get-RoundPrompt $round), $utf8)
-
-    # The proven redirection from the hand-made rounds: codex reads the prompt file on stdin.
-    $forkPart = if ($forkFrom) { " fork $forkFrom" } else { '' }
-    $cmdLines = @(
-        '@echo off'
-        'setlocal'
-        "set CODEX_HOME=$codexHome"
-        'set OPENAI_API_KEY='
-        'set CODEX_API_KEY='
-        "cd /d `"$work`""
-        "echo.>> `"$log`""
-        "echo ===== ROUND_LAUNCH r$round START_LOCAL=%DATE% %TIME% =====>> `"$log`""
-        "`"$codex`" exec --profile lemmata --model $Model -c model_reasoning_effort=$Effort --cd `"$work`" --skip-git-repo-check --color never --json -o `"$lastMessage`"$forkPart - < `"$promptFile`" >> `"$log`" 2>&1"
-        'set RC=%ERRORLEVEL%'
-        "echo ROUND_EXIT_CODE=%RC% END_LOCAL=%DATE% %TIME%>> `"$log`""
-        'exit %RC%'
-    )
-    [IO.File]::WriteAllText($launch, ($cmdLines -join "`r`n") + "`r`n", $utf8)
+    $cmdLines = Write-LaunchCmd $launch "ROUND_LAUNCH r$round" $promptFile $lastMessage $log $forkFrom
 
     $lastRound = $round
     if ($DryRun) {
@@ -262,34 +305,12 @@ while (-not $status) {
 
     $started = Get-Date
     Write-Log "round $round start$(if ($forkFrom) { " (fork $forkFrom)" } else { ' (new session)' }), cap $([Math]::Round($roundMs / 3600000, 2))h"
-    $proc = Start-Process cmd.exe -ArgumentList '/c', "`"$launch`"" -PassThru -NoNewWindow
-    $null = $proc.Handle  # PS 5.1 needs the handle cached for ExitCode
-    $killed = $false
-    try {
-        # Short slices so Ctrl+C can interrupt the wait.
-        $roundEnd = (Get-Date).AddMilliseconds($roundMs)
-        while (-not $proc.WaitForExit(2000)) {
-            if ((Get-Date) -ge $roundEnd) {
-                & taskkill.exe /PID $proc.Id /T /F | Out-Null
-                $proc.WaitForExit()
-                $killed = $true
-                break
-            }
-        }
-    } finally {
-        # Ctrl+C or an error in the runner must not leave codex running.
-        if (-not $proc.HasExited) { & taskkill.exe /PID $proc.Id /T /F | Out-Null }
-    }
-    # Killed MCP children (wsl.exe) hold the inherited log handle for a few seconds.
-    for ($i = 0; $i -lt 30; $i++) {
-        try { [IO.File]::Open($log, 'OpenOrCreate', 'ReadWrite', 'None').Dispose(); break } catch { Start-Sleep 1 }
-    }
-    if ($killed) {
-        [IO.File]::AppendAllText($log, "ROUND_KILLED $((Get-Date).ToString('o'))`r`n", $utf8)
-        Write-Log "ROUND_KILLED round $round after the time cap"
-    }
-    $exitCode = $proc.ExitCode
+    $run = Invoke-Launch $launch $log $roundMs
+    $killed = $run.killed
+    if ($killed) { Write-Log "ROUND_KILLED round $round after the time cap" }
+    $exitCode = $run.exit
     $parsed = Read-RoundLog $log
+    if ($parsed.thread) { $lastThread = $parsed.thread }
     $snapshot = Get-Snapshot $round 'end' $parsed.thread
     $verdict = if ($snapshot -and $snapshot.verdict) { $snapshot.verdict } else { $parsed.verdict }
     $failed = -not $killed -and $exitCode -ne 0 -and -not $parsed.completed
@@ -332,5 +353,45 @@ if (-not $DryRun) {
     [IO.File]::AppendAllText($runJsonl, (ConvertTo-Json ([ordered]@{ final = $status; last_round = $lastRound; ended = (Get-Date).ToString('o') }) -Compress) + "`n", $utf8)
 }
 Write-Log "stopped: $status (round $lastRound)"
+
+# --- Learn page ----------------------------------------------------------------------
+function Invoke-Learn([string]$Thread) {
+    $base = Join-Path $OutDir "$Name-learn"
+    $promptFile = "$base-prompt.txt"
+    $launch = "$base-launch.cmd"
+    $log = "$base.log"
+    $md = "$base.md"
+    $text = Invoke-Goals @('prompt', $Challenge, '--learn')
+    if ($null -eq $text) { Write-Log 'goals prompt --learn unavailable; Learn page skipped'; return }
+    [IO.File]::WriteAllText($promptFile, ($text -join "`n"), $utf8)
+    $cmdLines = Write-LaunchCmd $launch 'LEARN_LAUNCH' $promptFile $md $log $Thread
+    $outWsl = (& wsl.exe -d $distro --exec wslpath -a $OutDir | Select-Object -First 1)
+    $learnArgs = @('learn', $Challenge, '--out', "$outWsl/$Name-learn.html")
+    if ($DryRun) {
+        Write-Log "dry run: learn prompt $promptFile"
+        Write-Log "dry run: learn launch $launch$(if (-not $Thread) { ' (no thread to fork: new session)' })"
+        Write-Host ($cmdLines -join "`n")
+        Write-Log "dry run: would render: lemmata-mcp $($learnArgs -join ' ') --explanation $outWsl/$Name-learn.md"
+        return
+    }
+    $remaining = ($deadline - (Get-Date)).TotalMilliseconds
+    if ($Thread -and $remaining -le 0) {
+        Write-Log 'learn: time cap used up; the page has no explanation'
+    } elseif ($Thread) {
+        # The explanation is short: cap it at one hour, the round cap or the remaining time.
+        Write-Log "learn: forking $Thread for the explanation"
+        Remove-Item -LiteralPath $md -ErrorAction SilentlyContinue  # never render a stale one
+        $run = Invoke-Launch $launch $log ([Math]::Min([Math]::Min($RoundCapHours, 1) * 3600000, $remaining))
+        Write-Log "learn: exit $($run.exit), killed $($run.killed)"
+    } else {
+        Write-Log 'learn: no thread to fork; the page has no explanation'
+    }
+    if (Test-Path -LiteralPath $md) { $learnArgs += @('--explanation', "$outWsl/$Name-learn.md") }
+    if ($null -ne (Invoke-Mcp $learnArgs)) { Write-Log "Learn page: $base.html" }
+    else { Write-Log 'learn: lemmata-mcp learn failed' }
+}
+if ($Learn -and $status -in 'verdict', 'no-progress', 'max-rounds', 'dry-run') {
+    try { Invoke-Learn $lastThread } catch { Write-Log "learn failed: $($_.Exception.Message)" }
+}
 Send-Webhook "$Name-r$lastRound" $status
 if ($status -eq 'failed') { exit 1 }

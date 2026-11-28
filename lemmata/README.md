@@ -154,6 +154,21 @@ result, and the prompt is a built-in one (or `-PromptTemplate` with `{problem}` 
 After every round, and at the stop, it posts `{threadId: <Name>-r<N>, status}` to the webhook in
 `-WebhookEnv`; the key is never logged.
 
+### Learn page
+
+With `-Learn`, a `verdict`, `no-progress` or `max-rounds` stop adds one more fork of the last
+thread. It is prompted by `lemmata-mcp goals prompt <id> --learn` (only `whiteboard.goal_tree`,
+no `submit_verdict`) and writes an explanation to `<Name>-learn.md`. Then
+`lemmata-mcp learn <id> --explanation <md> --out <html>` renders `<Name>-learn.html`. This is
+one self-contained page with the statement, the verdict, the explanation (Markdown and LaTeX) and
+the goal tree as nested sections, each carrying its status, flag and the Lean source of the
+lemma that closed, refuted or split it. KaTeX (with its fonts) and marked are fetched once from
+cdnjs at pinned versions, checked against pinned sha256 digests, cached in
+`~/.lemmata/state/learn-vendor` and inlined, so the page opens offline. `learn` also runs on its
+own, without an explanation, for any challenge. After a run has stopped, the page can be rebuilt by
+hand with `lemmata-mcp learn <id> --explanation <md> --out <html>` (`-Resume` refuses a run that
+ended with a verdict).
+
 ## Math tools (`lemmata/mcp`)
 
 Five Python MCP servers plus upstream [lean-lsp-mcp](https://github.com/oOo0oOo/lean-lsp-mcp),

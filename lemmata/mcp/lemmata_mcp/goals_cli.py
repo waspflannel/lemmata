@@ -4,6 +4,7 @@ goals show <problem>                                    goal_tree JSON
 goals snapshot <problem> --round N --phase begin|end [--thread ID]
                                                         one JSON line (stats, progress, verdict)
 goals prompt <problem> --round N [--template FILE]      the next round's prompt (UTF-8)
+goals prompt <problem> --learn                          the Learn-page explanation prompt
 """
 
 from __future__ import annotations
@@ -34,6 +35,24 @@ progress, and the run stops after repeated no-progress rounds.
 
 End with `submit_verdict` (UNRESOLVED citing goal ids, or PROVED/DISPROVED from \
 `goal_certificate`).
+"""
+
+LEARN_PROMPT = """\
+The run on challenge {problem} has stopped. Write the explanation for its Learn page.
+
+No tool calls except `whiteboard.goal_tree` (problem {problem}). Do not call `submit_verdict`.
+
+Write for a strong undergraduate, in Markdown with LaTeX math between `$...$` (inline) and \
+`$$...$$` (display); use `lean` code blocks for Lean. Sections, in order:
+1. Background and definitions the statement needs.
+2. Why the problem is hard (or, if it fell quickly, what made it tractable).
+3. A top-down walk through the goal tree. For each goal, give the idea of the Lean-checked step \
+that closed, refuted or split it, and cite its goal id and lemma ids. Say which splits were \
+flagged as restatements or strengthenings and why they did not count as progress.
+4. What remains open, stated plainly. If the verdict is PROVED or DISPROVED, say what the \
+certificate consists of.
+
+Your final message is the page text itself: the explanation only, no preface.
 """
 
 FLAG_ADVICE = {
@@ -106,9 +125,12 @@ def main(argv: list[str]) -> None:
     snap.add_argument("--thread")
     text = commands.add_parser("prompt")
     text.add_argument("problem")
-    text.add_argument("--round", type=int, required=True)
+    text.add_argument("--round", type=int)
     text.add_argument("--template", type=Path)
+    text.add_argument("--learn", action="store_true", help="the Learn-page explanation prompt")
     args = parser.parse_args(argv)
+    if args.command == "prompt" and not args.learn and args.round is None:
+        parser.error("prompt needs --round N (or --learn)")
     sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
     try:
         if args.command == "show":
@@ -117,6 +139,9 @@ def main(argv: list[str]) -> None:
         elif args.command == "snapshot":
             result = snapshot(args.problem, args.round, args.phase, args.thread)
             print(json.dumps(result, ensure_ascii=False))
+        elif args.learn:
+            verdict_server._challenge(args.problem)
+            sys.stdout.write(LEARN_PROMPT.format(problem=args.problem))
         else:
             template = (
                 args.template.read_text(encoding="utf-8") if args.template else DEFAULT_TEMPLATE
