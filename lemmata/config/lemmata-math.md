@@ -34,9 +34,9 @@ Generate outside Lean, then let the kernel check a compact certificate.
 
 1. Generate the table with `compute.certificate_table` (`rows()` yields fixed-width int tuples). Each chunk is one packed Nat literal; the `header` defines the decoder `<name>Row`, the checker `<name>All` and its soundness lemma `<name>All_sound`.
 2. Write `chk : ℕ → List ℕ → Bool` over the row index and the decoded row, by pattern matching or structural recursion on a fuel argument, never well-founded recursion.
-3. Prove once that `chk i row = true` implies the fact you need for index `i`; `<name>All_sound` turns a checked chunk into that fact for every row.
-4. Check each chunk with its `template` (`by decide +kernel`) through `lean.batch_check`, then `register_lemma` each chunk lemma.
-5. Combine the chunks with a covering lemma: chunk `i` starts at row `base`, so the ranges are contiguous; boundary facts are themselves `decide +kernel` on the lengths.
+3. Prove once that `chk i row = true` implies the fact you need for index `i`; `<name>All_sound` turns a checked chunk into that fact for every row. Register `header` + `chk` + this proof once as one lemma H.
+4. Check each chunk as its `lean` text + `template` with `use_lemmas=[H]` (the header lives only in H: lemma sources are concatenated without de-duplication), then `register_lemma` it.
+5. Combine with a covering lemma using `use_lemmas=[H, chunk lemmas...]`: chunk `i` starts at row `base`, so the ranges are contiguous; boundary facts are themselves `decide +kernel` on the lengths.
 6. Never `by decide` on a large table (it unfolds instances in the elaborator) and never `native_decide`. Raise `maxRecDepth` only for the checker definition, not around kernel reduction. Keep each chunk under about 60 s; lower `chunk_rows` if it is slower or not returned inline.
 
 # Verdicts

@@ -682,6 +682,15 @@ def score_job(job: dict[str, Any]) -> dict[str, Any]:
 # --- certificate tables -------------------------------------------------------------------
 
 
+def check_table_row(index: int, row: list[Any], bits: list[int]) -> None:
+    """Raise unless row is len(bits) plain ints, each in [0, 2^bits)."""
+    fits = len(row) == len(bits) and all(
+        type(v) is int and 0 <= v < 1 << b for v, b in zip(row, bits, strict=True)
+    )
+    if not fits:
+        raise ValueError(f"row {index} {row!r} does not fit field_bits {bits}")
+
+
 def table_job(job: dict[str, Any]) -> dict[str, Any]:
     """Run the worker's rows() and validate every row against the fixed field widths."""
     namespace: dict[str, Any] = {}
@@ -693,11 +702,7 @@ def table_job(job: dict[str, Any]) -> dict[str, Any]:
     rows: list[list[int]] = []
     for row in namespace["rows"]():
         row = list(row)
-        fits = len(row) == len(bits) and all(
-            type(v) is int and 0 <= v < 1 << b for v, b in zip(row, bits, strict=True)
-        )
-        if not fits:
-            raise ValueError(f"row {len(rows)} {row!r} does not fit field_bits {bits}")
+        check_table_row(len(rows), row, bits)
         rows.append(row)
         if len(rows) > TABLE_MAX_ROWS:
             raise ValueError(f"more than {TABLE_MAX_ROWS} rows")

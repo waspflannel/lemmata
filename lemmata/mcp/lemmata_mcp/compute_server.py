@@ -18,6 +18,7 @@ from . import board, solvers
 from .cas import Sage
 from .cas import ideal_cofactors as cas_ideal_cofactors
 from .common import HOME, PINS, STATE, run, run_job, sha256, tool_path
+from .jobs import TABLE_MAX_ROWS, check_table_row
 
 sage_worker = Sage()
 GENG_FLAG = re.compile(r"-[a-zA-Z]+|-[dD]\d+|\d+:\d+")
@@ -471,11 +472,14 @@ def certificate_table(
     if "rows" not in result:
         return result
     rows: list[list[int]] = result.pop("rows")
-    if not rows:
-        raise ValueError("rows() yielded nothing")
+    if not isinstance(rows, list) or not 0 < len(rows) <= TABLE_MAX_ROWS:
+        raise ValueError(f"rows() must yield 1..{TABLE_MAX_ROWS} rows")
+    for i in range(len(rows)):  # the sandbox output is untrusted
+        check_table_row(i, rows[i], field_bits)
     stream = json.dumps(rows, separators=(",", ":"))
     digest = sha256(stream)
-    directory = STATE / "artifacts" / "cert" / digest[:16]
+    key = sha256(f"{digest}|{name}|{field_bits}|{chunk_rows}")
+    directory = STATE / "artifacts" / "cert" / key[:16]
     directory.mkdir(parents=True, exist_ok=True)
     header = _table_header(name, field_bits)
     (directory / "header.lean").write_text(header)
@@ -518,6 +522,7 @@ def certificate_table(
         "first_key": rows[0][0],
         "last_key": rows[-1][0],
         "rows": len(rows),
+        "checked": False,
         "field_bits": field_bits,
         "rows_sha": digest,
         "generator_sha": sha256(generator),
