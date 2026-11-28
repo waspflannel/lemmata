@@ -19,7 +19,7 @@ from contextlib import closing
 from typing import Any
 from urllib.parse import quote
 
-from . import board, verdict_server
+from . import board, compute_server, verdict_server
 from .common import STATE, run_job, sha256
 from .left_to_solve import PROBLEM_ID, LTSError, read_response, search_row
 
@@ -102,7 +102,7 @@ def search(c: dict[str, Any], budget_s: float) -> dict[str, Any]:
     rungs: list[dict[str, Any]] = []
     for bound in LADDER:
         left = deadline - time.monotonic()
-        if left < 1:
+        if rungs and left < 1:
             break
         job = {"predicate": c["predicate"], "variables": c["variables"], "max_bound": bound}
         result = run_job(
@@ -111,23 +111,16 @@ def search(c: dict[str, Any], budget_s: float) -> dict[str, Any]:
         )
         outcome = result.get("outcome", "error")
         rung = {"max_bound": bound, "outcome": outcome, "evaluated": result.get("evaluated")}
-        if outcome in board.COVERAGE_OUTCOMES:
-            rung["coverage_id"] = board.add_coverage(
-                c["id"],
-                None,
-                "triage-enumerate",
-                result.get("generator_version", "triage-enumerate"),
-                {
-                    "max_bound": bound,
-                    "variables": c["variables"],
-                    "predicate_sha": sha256(c["predicate"]),
-                },
-                {"index": 0, "count": 1},
-                [],
-                outcome,
-                {k: result[k] for k in ("completed_level", "evaluated") if k in result},
-                result.get("witnesses"),
-            )
+        bounds = {
+            "max_bound": bound,
+            "variables": c["variables"],
+            "predicate_sha": sha256(c["predicate"]),
+        }
+        compute_server._record(
+            c["id"], None, "triage-enumerate", result, bounds, {"index": 0, "count": 1}, []
+        )
+        if "coverage_id" in result:
+            rung["coverage_id"] = result["coverage_id"]
         if "error" in result:
             rung["error"] = str(result["error"])[:500]
         rungs.append(rung)
@@ -156,6 +149,9 @@ def score(report: dict[str, Any], c: dict[str, Any] | None) -> tuple[int, str, l
     if found.get("replay", {}).get("replayed"):
         return 100, "disprove-now", [["search witness replayed", "score 100"]]
     factors: list[list[Any]] = [["base", 50]]
+    unknown = "error" in up
+    if unknown:
+        factors.append(["upstream solved status unknown", -50])
     if up.get("kind") in KIND_POINTS:
         factors.append([f"Left to Solve kind {up['kind']}", KIND_POINTS[up["kind"]]])
     if type(up.get("difficulty")) is int:
@@ -172,7 +168,8 @@ def score(report: dict[str, Any], c: dict[str, Any] | None) -> tuple[int, str, l
             factors.append(
                 [f"{unresolved} accepted UNRESOLVED round(s)", -min(30, 10 * unresolved)]
             )
-    return max(0, min(100, sum(f[1] for f in factors))), "scored", factors
+    status = "upstream-unknown" if unknown else "scored"
+    return max(0, min(100, sum(f[1] for f in factors))), status, factors
 
 
 def triage(target: str, budget_s: float) -> dict[str, Any]:
@@ -190,7 +187,9 @@ def triage(target: str, budget_s: float) -> dict[str, Any]:
     if report["upstream"].get("solved") is True:
         report["search"] = {"skipped": "already solved upstream"}
     elif c is None:
-        report["search"] = {"skipped": "not imported; run `lemmata-mcp lts import` first"}
+        report["search"] = {
+            "skipped": "no frozen challenge (not imported, or imported as text-only)"
+        }
     else:
         report["search"] = search(c, budget_s)
     report["score"], report["status"], report["factors"] = score(report, c)
@@ -249,17 +248,27 @@ def markdown(r: dict[str, Any]) -> str:
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(prog="lemmata-mcp triage", description=__doc__)
     parser.add_argument("id", help="16-hex challenge id or Left to Solve problem id")
-    parser.add_argument("--budget-s", type=int, default=120, help="search budget, 1-3600 s")
+    parser.add_argument(
+        "--budget-s",
+        type=int,
+        default=120,
+        help="search budget, 1-3600 s; replay of a found witness can add up to 120 s",
+    )
     parser.add_argument("--json", action="store_true", help="print JSON instead of Markdown")
     args = parser.parse_args(argv)
     if not 1 <= args.budget_s <= 3600:
         sys.exit("triage: --budget-s must be 1-3600")
     try:
         report = triage(args.id, args.budget_s)
-        out = STATE / "triage" / f"{quote(args.id, safe='')}.json"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(report, indent=1, ensure_ascii=False))
     except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
         sys.exit(f"triage: {error}")
-    print(json.dumps(report, indent=1, ensure_ascii=False) if args.json else markdown(report))
-    print(f"Saved {out}", file=sys.stderr)
+    text = json.dumps(report, indent=1, ensure_ascii=False)
+    print(text if args.json else markdown(report))
+    out = STATE / "triage" / f"{quote(args.id, safe='')}.json"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+    except OSError as error:
+        print(f"triage: warning: could not save {out}: {error}", file=sys.stderr)
+    else:
+        print(f"Saved {out}", file=sys.stderr)
