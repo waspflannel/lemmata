@@ -240,7 +240,7 @@ command, not an MCP tool, so workers never see its score.
 | `lean` | `check`, `portfolio`, `repair`, `register_lemma`, `step`, `batch_check`, `goal_split`, `goal_close`, `goal_refute`, `goal_certificate` | One warm leanprover-community/repl with `import Mathlib` (+ `Hammer`, `LeanCert.Tactic`) loaded once. Goals at each `sorry` and before each tactic, axioms per theorem, proof-state branching (`step`), bounded tactic portfolio (Duper, hammer, LeanCert kernel mode included), multi-attempt repair, batch checks (opt-in Kimina pool), sharing proved lemmas, and the goal tree: Lean-checked splits, closes and refutations of goals, and the certificate once the root is decided. |
 | `lean_lsp` | `lean_goal`, `lean_multi_attempt`, `lean_loogle`, ... (15 allowlisted) | lean-lsp-mcp on the work project, for files written by `check(save_as=...)`. Local Loogle only; network tools and `lean_build` are disabled; its REPL mode is off (the one warm REPL is `lean`'s). |
 | `library` | `search_decls`, `decl_info`, `formal_conjectures`, `oeis`, `pi_base`, `lmfdb` | FTS index over every Mathlib/Batteries/core declaration (full type, `import`, package revision) plus project-proved lemmas; Formal Conjectures at a pinned commit; OEIS from local data (HTTP fallback); pi-Base at a pinned commit with forward-chaining deduction; LMFDB read-only API (research profile only). |
-| `compute` | `enumerate`, `graph_search`, `local_search`, `sat_solve`, `sage`, `gap`, `pari`, `macaulay2`, `snappy`, `mace4`, `ideal_cofactors`, `interval_sign`, `exact_lp`, `sos_certificate`, `pslq`, `conjecture_mine`, `evolve` | Size-ordered symmetry-aware integer search with Plausible-style shrinking; geng graph search (or a saved graph6 list); simulated annealing; CaDiCaL + DRAT-trim; warm Sage worker (also SnapPy); GAP + SmallGrp, PARI/GP, Macaulay2 and Mace4 CLIs; Groebner cofactors for `linear_combination`; python-flint Arb signs; SoPlex exact LP; CSDP sum-of-squares certificates; mpmath PSLQ; TxGraffiti-style conjecture mining; OpenEvolve-style program evolution. |
+| `compute` | `enumerate`, `graph_search`, `local_search`, `sat_solve`, `sage`, `gap`, `pari`, `macaulay2`, `snappy`, `mace4`, `ideal_cofactors`, `interval_sign`, `exact_lp`, `sos_certificate`, `pslq`, `conjecture_mine`, `evolve`, `certificate_table` | Size-ordered symmetry-aware integer search with Plausible-style shrinking; geng graph search (or a saved graph6 list); simulated annealing; CaDiCaL + DRAT-trim; warm Sage worker (also SnapPy); GAP + SmallGrp, PARI/GP, Macaulay2 and Mace4 CLIs; Groebner cofactors for `linear_combination`; python-flint Arb signs; SoPlex exact LP; CSDP sum-of-squares certificates; mpmath PSLQ; TxGraffiti-style conjecture mining; OpenEvolve-style program evolution; packed Nat tables for `decide +kernel` checks. |
 | `whiteboard` | `goal_tree`, `read`, `lemma_add`, `lemma_update`, `dead_end_add`, `dead_end_find`, `coverage_add` | Shared SQLite (WAL): goal tree (read-only here), lemma DAG, dead-end memory, refutation coverage. |
 
 Details that matter for trust:
@@ -353,6 +353,11 @@ produces candidates or evidence that must go through one of those two doors.
   `is_isometric_to(..., return_isometries=True)`; exact: `fundamental_group()`, `homology()`.
   Everything else (unverified volumes, shapes, length spectra, `identify()`, a `False` from
   `is_isometric_to`) is numerical evidence. None of it is a verdict without Lean.
+- **Certificate tables.** `certificate_table` packs worker-generated rows into one Nat literal
+  per chunk with a generated decoder, a `Nat.rec` fuel checker and its soundness lemma. The
+  chunk check is `decide +kernel` (kernel only, standard axioms), so the elaborator never
+  unfolds a huge `List`; `native_decide` stays forbidden. The table itself is not evidence
+  until Lean checks it.
 - **PSLQ, conjecture mining, local search, evolve** give candidates: a relation to prove, a
   bound to test, a witness to replay, a construction to replay. `local_search` records only
   refutations as coverage, since a random search covers nothing.

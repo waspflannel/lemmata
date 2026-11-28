@@ -81,6 +81,7 @@ allowed_tools = [
   "mcp__compute/local_search",
   "mcp__compute/conjecture_mine",
   "mcp__compute/evolve",
+  "mcp__compute/certificate_table",
   # verdict
   "mcp__verdict/get_challenge",
   "mcp__verdict/replay_witness",
@@ -263,7 +264,7 @@ tool_timeout_sec = 3600
 enabled_tools = [
   "enumerate", "graph_search", "sat_solve", "sage", "ideal_cofactors", "interval_sign",
   "gap", "pari", "macaulay2", "mace4", "snappy", "exact_lp", "sos_certificate", "pslq",
-  "local_search", "conjecture_mine", "evolve",
+  "local_search", "conjecture_mine", "evolve", "certificate_table",
 ]
 
 [mcp_servers.verdict]

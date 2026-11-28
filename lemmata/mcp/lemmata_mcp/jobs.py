@@ -25,6 +25,8 @@ ENUMERATOR_VERSION = "lemmata-enumerate/1"
 GRAPH_VERSION = "lemmata-geng/1"
 ANNEAL_VERSION = "lemmata-anneal/1"
 MINE_VERSION = "lemmata-txgraffiti/1"
+TABLE_VERSION = "lemmata-table/1"
+TABLE_MAX_ROWS = 10**6
 SPOT_CHECK_POINTS = 5000
 SHRINK_EVALS = 2000
 
@@ -677,6 +679,33 @@ def score_job(job: dict[str, Any]) -> dict[str, Any]:
     return {"score": value}
 
 
+# --- certificate tables -------------------------------------------------------------------
+
+
+def table_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Run the worker's rows() and validate every row against the fixed field widths."""
+    namespace: dict[str, Any] = {}
+    exec(compile(job["generator"], "<generator>", "exec"), namespace)
+    if not callable(namespace.get("rows")):
+        raise ValueError("generator must define rows() yielding tuples of non-negative ints")
+    bits = job["field_bits"]
+    deadline = time.monotonic() + job["timeout"]
+    rows: list[list[int]] = []
+    for row in namespace["rows"]():
+        row = list(row)
+        fits = len(row) == len(bits) and all(
+            type(v) is int and 0 <= v < 1 << b for v, b in zip(row, bits, strict=True)
+        )
+        if not fits:
+            raise ValueError(f"row {len(rows)} {row!r} does not fit field_bits {bits}")
+        rows.append(row)
+        if len(rows) > TABLE_MAX_ROWS:
+            raise ValueError(f"more than {TABLE_MAX_ROWS} rows")
+        if len(rows) % 1024 == 0 and time.monotonic() > deadline:
+            raise TimeoutError(f"rows() still running after {len(rows)} rows")
+    return {"rows": rows, "generator_version": TABLE_VERSION}
+
+
 def main() -> None:
     job = json.loads(sys.stdin.read())
     kinds = {
@@ -688,6 +717,7 @@ def main() -> None:
         "mine": mine_job,
         "construct": construct_job,
         "score": score_job,
+        "table": table_job,
     }
     try:
         result = kinds[job["kind"]](job)

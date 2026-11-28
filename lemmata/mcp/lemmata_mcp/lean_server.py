@@ -328,6 +328,7 @@ def check(
     proved whiteboard lemmas (and their deps). `show_tactics` adds the goal before every
     tactic. `save_as` also writes the file under the work project so lean_lsp tools (goal at
     a line, hover, multi_attempt) can open it; the returned path is relative to that project.
+    Keep `decide +kernel` table chunks (compute.certificate_table) under 120 s each.
     """
     result = _check(code, use_lemmas, timeout_s, all_tactics=show_tactics)
     if show_tactics and "_tactics" in result:
