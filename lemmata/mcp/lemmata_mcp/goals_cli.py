@@ -55,17 +55,6 @@ def latest_verdict(problem: str) -> dict[str, Any] | None:
     return {**dict(row), "accepted": bool(row["accepted"])} if row else None
 
 
-def open_leaves(node: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Open goals still to work on: not below a closed or refuted goal."""
-    if node is None:
-        return []
-    if node["status"] == "open":
-        return [node]
-    if node["status"] != "split" or "split" not in node:
-        return []
-    return [leaf for child in node["split"]["children"] for leaf in open_leaves(child)]
-
-
 def snapshot(problem: str, round_: int, phase: str, thread_id: str | None) -> dict[str, Any]:
     verdict_server._challenge(problem)  # a frozen challenge, or ValueError
     return {**board.snapshot(problem, round_, phase, thread_id), "verdict": latest_verdict(problem)}
@@ -74,9 +63,18 @@ def snapshot(problem: str, round_: int, phase: str, thread_id: str | None) -> di
 def prompt(problem: str, round_: int, template: str) -> str:
     verdict_server._challenge(problem)
     tree = board.goal_tree(problem)
+    nodes: dict[int, dict[str, Any]] = {}
+
+    def index(node: dict[str, Any]) -> None:
+        nodes[node["id"]] = node
+        for child in node.get("split", {}).get("children", []):
+            index(child)
+
+    if tree["root"]:
+        index(tree["root"])
     leaves = [
         f"- goal {g['id']}: {g['informal'] or '(no informal text)'} :: `{g['statement']}`"
-        for g in open_leaves(tree["root"])
+        for g in (nodes[i] for i in tree["open_leaf_ids"])
     ]
     flagged = [
         f"- goal {f['goal_id']} ({f['flag']}): {f['informal'] or ''} :: "

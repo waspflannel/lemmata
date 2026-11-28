@@ -332,6 +332,8 @@ def add_coverage(
         raise ValueError(f"outcome must be one of {COVERAGE_OUTCOMES}")
     if outcome == "lemma_refuted" and lemma_id is not None:
         refuse_goal_lemma(lemma_id)
+        if lemma_row(lemma_id)["status"] == "proved":
+            raise ValueError(f"lemma {lemma_id} is proved and cannot be refuted")
     db = connect()
     cur = db.execute(
         "INSERT INTO coverage (problem, lemma_id, generator, generator_version, bounds, shard,"
@@ -606,10 +608,17 @@ def add_split(
     children: list[dict[str, str]],
     split_lemma: dict[str, Any],
     weaken_lemmas: list[dict[str, Any] | None],
+    n: int,
 ) -> dict[str, Any]:
-    """Record a checked split of an open goal: its lemmas, the split row, the children."""
+    """Record a checked split of an open goal: its lemmas, the split row, the children.
+    `n` is the split number the lemma names were built from."""
     db, _ = _transaction(problem, goal_id, ("open",))
     with closing(db), db:
+        made = db.execute(
+            "SELECT COUNT(*) AS n FROM goal_splits WHERE goal_id = ?", (goal_id,)
+        ).fetchone()["n"]
+        if made != n - 1:
+            raise ValueError("goal changed during the check; retry")
         lemma_id = _insert_checked_lemma(db, problem, split_lemma)
         weak_ids = [_insert_checked_lemma(db, problem, w) if w else None for w in weaken_lemmas]
         split_id = int(
@@ -667,8 +676,12 @@ def parent_edge(goal_id: int) -> dict[str, Any] | None:
 
 
 def kill_split(problem: str, split_id: int, parent_id: int) -> None:
-    """A refuted child makes its split useless: mark it dead and reopen the parent."""
-    db, _ = _transaction(problem, parent_id, ("split",))
+    """A refuted child makes its split useless: mark it dead and reopen the parent (a no-op
+    if the parent was closed in the meantime)."""
+    try:
+        db, _ = _transaction(problem, parent_id, ("split",))
+    except ValueError:
+        return
     with closing(db), db:
         db.execute("UPDATE goal_splits SET dead = 1 WHERE id = ?", (split_id,))
         db.execute(
@@ -689,7 +702,10 @@ def root_goal(problem: str) -> dict[str, Any] | None:
 def goal_tree(problem: str) -> dict[str, Any]:
     """The live tree from the root (statements truncated, dead splits as ids only), plus
     stats: open leaves and their complexity in the live tree; closed, refuted, flagged goals
-    and case splits counted over all goals ever recorded (so they never go down)."""
+    and case splits counted over all goals ever recorded (so they never go down). Only the
+    root and children of `case` splits (live or dead) count as closed or refuted: resolving
+    a goal under a `reduction` split (e.g. closing `True`) is not progress. `open_leaf_ids`
+    lists the open leaves counted in the stats."""
     db = connect()
     goals = {
         r["id"]: dict(r) for r in db.execute("SELECT * FROM goals WHERE problem = ?", (problem,))
@@ -702,10 +718,13 @@ def goal_tree(problem: str) -> dict[str, Any]:
             (problem,),
         )
     ]
+    case_splits = {s["id"] for s in splits if s["relation"] == "case"}
+    counted = [g for g in goals.values() if g["split_id"] is None or g["split_id"] in case_splits]
+    open_leaf_ids: list[int] = []
     stats = {
         "open_leaves": 0,
-        "closed": sum(g["status"] == "closed" for g in goals.values()),
-        "refuted": sum(g["status"] == "refuted" for g in goals.values()),
+        "closed": sum(g["status"] == "closed" for g in counted),
+        "refuted": sum(g["status"] == "refuted" for g in counted),
         "case_splits": sum(s["relation"] == "case" for s in splits),
         "flagged": sum(g["flag"] is not None for g in goals.values()),
         "complexity_sum": 0,
@@ -727,6 +746,7 @@ def goal_tree(problem: str) -> dict[str, Any]:
                 item[key] = g[key]
         if active and g["status"] == "open":
             stats["open_leaves"] += 1
+            open_leaf_ids.append(g["id"])
             stats["complexity_sum"] += g["complexity"]
         own = [s for s in splits if s["goal_id"] == g["id"]]
         if dead := [s["id"] for s in own if s["dead"]]:
@@ -746,7 +766,12 @@ def goal_tree(problem: str) -> dict[str, Any]:
         return item
 
     root = next((g for g in goals.values() if g["parent_id"] is None), None)
-    return {"problem": problem, "root": node(root) if root else None, "stats": stats}
+    return {
+        "problem": problem,
+        "root": node(root) if root else None,
+        "stats": stats,
+        "open_leaf_ids": open_leaf_ids,
+    }
 
 
 def snapshot(problem: str, round_: int, phase: str, thread_id: str | None) -> dict[str, Any]:
@@ -878,7 +903,11 @@ def lemma_update(
         }.items()
         if v is not None
     }
+    if owner == GOAL_OWNER:
+        raise ValueError(f"owner {GOAL_OWNER!r} is reserved for the lean server")
     refuse_goal_lemma(lemma_id)
+    if status is not None and lemma_row(lemma_id)["status"] == "proved":
+        raise ValueError(f"lemma {lemma_id} is proved; its status cannot change")
     update_lemma(lemma_id, **fields)
     return {"ok": True}
 

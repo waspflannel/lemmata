@@ -15,7 +15,7 @@ from mcp.server.mcpserver import MCPServer
 
 from . import board, verdict_server
 from .cas import Sage, goal_equations, ideal_cofactors
-from .common import STANDARD_AXIOMS, WORK_PROJECT, scan_certificate
+from .common import _COMMENTS, _STRINGS, STANDARD_AXIOMS, WORK_PROJECT, scan_certificate
 from .repl import HEADER, IMPORTS, Kimina, Repl, ReplTimeout
 
 repl = Repl()
@@ -566,7 +566,11 @@ def register_lemma(lemma_id: int, code: str, use_lemmas: list[int] | None = None
     board.refuse_goal_lemma(lemma_id)
     if reason := scan_certificate(code):
         return {"registered": False, "reason": reason}
-    result = _check(code, use_lemmas, 300)
+    try:  # lemmas registered without the pasted prefix still elaborate
+        prefix = _challenge_prefix(board.lemma_row(lemma_id)["problem"])
+    except ValueError:  # not a frozen challenge
+        prefix = None
+    result = _check(code, use_lemmas, 300, prefix=prefix)
     if not result["ok"]:
         return {"registered": False, "reason": "does not fully check", "check": _public(result)}
     types = _decl_types(result)
@@ -675,14 +679,38 @@ def _statement_guard(statement: str) -> None:
     end it early or comment out the rest of the composed theorem."""
     if not statement.strip() or re.search(r"--|/-|:=", statement):
         raise ValueError(f"goal statement must be one Lean term, no comments: {statement!r}")
+    if not _balanced(statement):
+        raise ValueError(f"unbalanced delimiters in goal statement: {statement!r}")
+
+
+def _balanced(text: str) -> bool:
     stack = []
-    for char in statement:
+    for char in text:
         if char in DELIMITER_PAIRS.values():
             stack.append(char)
         elif char in DELIMITER_PAIRS and (not stack or stack.pop() != DELIMITER_PAIRS[char]):
-            raise ValueError(f"unbalanced delimiters in goal statement: {statement!r}")
-    if stack:
-        raise ValueError(f"unbalanced delimiters in goal statement: {statement!r}")
+            return False
+    return not stack
+
+
+def _codes(text: str) -> list[str]:
+    """`text` with comments and strings blanked, in both orders (as `scan_certificate`)."""
+    return [
+        _COMMENTS.sub(" ", _STRINGS.sub('""', text)),
+        _STRINGS.sub('""', _COMMENTS.sub(" ", text)),
+    ]
+
+
+# Commands that change what later text means: `variable (h : False)` + `include h` would add a
+# false hypothesis to the composed theorem. Matched only at a word start (after whitespace),
+# so `List.prefix` and the like pass.
+# ponytail: instances and `open` in lemma sources can still change an intermediate goal's
+# meaning; the root `Claim` and comparator stay fixed, so a certificate stays honest.
+CONTEXT_COMMANDS = re.compile(
+    r"(?:^|\s)(variable|include|omit|notation3?|infix[lr]?|prefix|postfix|macro(?:_rules)?"
+    r"|syntax|elab(?:_rules)?)(?=[\s(\"]|$)",
+    re.MULTILINE,
+)
 
 
 def _goal_context(problem: str, goal_id: int) -> tuple[str, dict[str, Any]]:
@@ -703,9 +731,16 @@ def _goal_lemma(
     """Check `theorem name : statement := proof` after the prefix and `use_lemmas`.
 
     Returns (lemma record for the board, None) when it fully checks, else (None, rejection).
-    The proof must add no declaration of its own: only `name` may be declared.
+    The proof must add no declaration of its own: only `name` may be declared, and it is
+    wrapped in parentheses so it cannot end the term early.
     """
-    source = f"theorem {name} : {statement} := {proof.strip()}\n"
+    if any("/-" in c or not _balanced(c) for c in _codes(proof)):
+        return None, {"reason": "the proof must be one term with balanced delimiters"}
+    lemma_text = board.lemma_sources(use_lemmas, prefix) if use_lemmas else ""
+    for code in _codes(f"{proof}\n{lemma_text}"):
+        if found := CONTEXT_COMMANDS.search(code):
+            return None, {"reason": f"`{found.group(1)}` is not allowed in goal proofs or lemmas"}
+    source = f"theorem {name} : {statement} := (\n{proof.strip(chr(10))}\n)\n"
     if reason := scan_certificate(source):
         return None, {"reason": reason}
     if _decl_names(source) != [name] or NAMESPACE.search(source):
@@ -723,13 +758,22 @@ def _goal_lemma(
     return lemma, None
 
 
-def _probe(prefix: str, goal: dict[str, Any], child: str, use_lemmas: list[int] | None) -> bool:
-    """Does a cheap tactic close `goal → child`? Then the single child is a restatement."""
+def _probe(
+    prefix: str,
+    goal: dict[str, Any],
+    child: str,
+    use_lemmas: list[int] | None,
+    assume: str | None = None,
+) -> bool:
+    """Does a cheap tactic close `(assume) → (child)` (or `child` alone without `assume`)?"""
     # ponytail: cheap probe; upgrade to portfolio(explore=false) if restatements slip through
-    source = (
-        f"theorem goal_{goal['id']}_probe : ({goal['lean_statement']}) → ({child}) := by\n"
-        f"  intro h\n  {PROBE_TACTICS}\n"
-    )
+    if assume is None:
+        source = f"theorem goal_{goal['id']}_probe : ({child}) := by\n  {PROBE_TACTICS}\n"
+    else:
+        source = (
+            f"theorem goal_{goal['id']}_probe : ({assume}) → ({child}) := by\n"
+            f"  intro h\n  {PROBE_TACTICS}\n"
+        )
     return bool(_check(source, use_lemmas, 30, prefix=prefix).get("ok"))
 
 
@@ -740,12 +784,21 @@ def _classify(
     weak_lemmas: list[dict[str, Any] | None],
     use_lemmas: list[int] | None,
 ) -> tuple[str, str]:
-    """(relation, reason) for a checked split; only `case` counts as progress."""
+    """(relation, reason) for a checked split; only `case` counts as progress. A would-be
+    `case` split runs the cheap probe on each child (up to 2k Lean checks of 30 s each)."""
     known = board.ancestor_hashes(goal["id"])
     if len(statements) >= 2:
         if any(board.goal_hash(s) in known for s in statements):
             return "restatement", "a child repeats the goal or an ancestor"
         if all(weak_lemmas):
+            # one probe per child (up to 2k cheap checks), only for would-be case splits
+            # every child already follows from P (weaken proofs); one that also implies P
+            # cheaply is P restated
+            target = goal["lean_statement"]
+            if any(_probe(prefix, goal, target, use_lemmas, s) for s in statements):
+                return "restatement", "a child implies the goal by a cheap tactic"
+            if any(_probe(prefix, goal, s, use_lemmas) for s in statements):
+                return "reduction", "a child is closed by a cheap tactic: it is not a real case"
             return "case", "every child has a weaken proof: a genuine case split"
         return "reduction", "some child lacks a weaken proof, so it may be harder than the goal"
     child = statements[0]
@@ -755,7 +808,7 @@ def _classify(
         return "restatement", "the child repeats the goal or an ancestor"
     if decl := board.iff_declaration(goal["problem"], goal["lean_statement"], child):
         return "restatement", f"project declaration `{decl}` states the equivalence"
-    if _probe(prefix, goal, child, use_lemmas):
+    if _probe(prefix, goal, child, use_lemmas, goal["lean_statement"]):
         return "restatement", "the equivalence probe proved goal → child"
     return "strengthening", "single child, no equivalence found: it may be strictly harder"
 
@@ -805,7 +858,7 @@ def _propagate_refuted(
         weak_id = edge["split"]["weaken_lemma_ids"][edge["index"]]
         if weak_id is not None:
             weak, child = board.lemma_row(weak_id)["name"], board.lemma_row(lemma_id)["name"]
-            lemma, _ = _goal_lemma(
+            lemma, rejection = _goal_lemma(
                 prefix,
                 f"goal_{parent['id']}_refuted",
                 f"¬ ({parent['lean_statement']})",
@@ -818,6 +871,12 @@ def _propagate_refuted(
                 refuted.append(parent["id"])
                 edge = board.parent_edge(parent["id"])
                 continue
+            return {
+                "refuted": refuted,
+                "reopened": None,
+                "dead_split": None,
+                "propagation_failed": {"goal_id": parent["id"], **rejection},
+            }
         board.kill_split(problem, edge["split"]["id"], parent["id"])
         return {"refuted": refuted, "reopened": parent["id"], "dead_split": edge["split"]["id"]}
     return {"refuted": refuted, "reopened": None, "dead_split": None}
@@ -887,7 +946,7 @@ def goal_split(
         weak_lemmas.append(lemma)
     relation, reason = _classify(prefix, goal, statements, weak_lemmas, use_lemmas)
     flag = relation if relation in ("restatement", "strengthening") else None
-    rows = board.add_split(problem, goal_id, relation, flag, children, split_lemma, weak_lemmas)
+    rows = board.add_split(problem, goal_id, relation, flag, children, split_lemma, weak_lemmas, n)
     return {
         "split": True,
         "split_id": rows["split_id"],
