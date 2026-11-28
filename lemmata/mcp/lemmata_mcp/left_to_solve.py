@@ -174,9 +174,29 @@ def search(args: argparse.Namespace) -> None:
     print(f"{len(rows) - 1} shown / {data['total']} total")
 
 
+def search_row(problem_id: str, details: dict[str, Any]) -> dict[str, Any] | None:
+    """The catalog's search row for `problem_id`: the validated `solved` flag lives only there
+    (problem details carry no `solved` field). Details with a boolean `solved` are used as is."""
+    if isinstance(details.get("solved"), bool):
+        return details
+    data = read_response("/api/problems?" + urlencode({"q": problem_id, "limit": "5"}))
+    return next((row for row in data["items"] if row["id"] == problem_id), None)
+
+
 def import_problem(problem_id: str, encoded_id: str, details: dict[str, Any]) -> None:
     from .verdict_server import freeze_lts
 
+    try:
+        row = search_row(problem_id, details)
+    except LTSError as error:
+        row = None
+        print(f"warning: could not check solved status: {error}", file=sys.stderr)
+    if row is not None and row["solved"]:
+        print(
+            f"warning: Left to Solve marks {problem_id} as solved; "
+            f"run `lemmata-mcp triage {problem_id}` before spending a run on it.",
+            file=sys.stderr,
+        )
     brief = None
     try:
         lean = details.get("lean")
