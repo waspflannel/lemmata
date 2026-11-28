@@ -19,7 +19,7 @@ FORBIDDEN = re.compile(
 )
 DELIMITERS = dict(zip("([{⟨", ")]}⟩", strict=True))
 PUNCTUATION = ".,':@()[]{}⟨⟩|!?+-*/^=<>_~"
-MAX_LEAN = 128 * 1024
+MAX_LEAN = 8 * 1024 * 1024
 
 
 class TextOnly(Exception):
@@ -109,32 +109,42 @@ def extract_claim(problem_id: str, lean: str, brief: str) -> tuple[str, str]:
         r"(?ms)^== THE FULL UPSTREAM FILE [^\n]*\n(.*?)(?=^== [A-Z]|\Z)",
         brief.replace("\r\n", "\n"),
     )
+    if not upstream and re.search(r"(?m)^== STATUS: ALREADY SOLVED", brief):
+        raise TextOnly("Left to Solve marks this problem solved; its brief has no upstream file")
     if not upstream or len(upstream[1]) > MAX_LEAN:
         raise TextOnly("the brief has no complete upstream Lean file within the import size limit")
     source = without_comments(upstream[1]).strip()
-    entries: list[tuple[str, re.Match[str] | None]] = []
+    entries: list[tuple[str, re.Match[str] | None, str]] = []
     scopes: list[str] = []
+    # `open X in` scopes only the next command, so it is re-emitted in front of that command.
+    opened = ""
     for block in BLOCK.split(source):
         block = block.strip()
         if not block:
             continue
+        prefix, opened = opened, ""
         decl = DECLARATION.fullmatch(block)
         if decl and decl[1] == name and ".".join(scopes) == namespace:
             signature, _ = top_level(decl[2], ":=")
             if signature.split() != target.split():
                 raise TextOnly(f"{name}: catalog target differs from the brief's upstream file")
+            target_prefix = prefix
             break
-        if definition := DEFINITION.fullmatch(block):
-            entries.append((block, definition))
+        if block.endswith(" in") and OPEN.fullmatch(block.removesuffix(" in")):
+            if {"hiding", "renaming"} & set(block.split()):
+                raise TextOnly(f"unsupported upstream context before {name}: {block[:120]}")
+            opened = prefix + block + "\n"
+        elif definition := DEFINITION.fullmatch(block):
+            entries.append((block, definition, prefix))
         elif block.startswith("namespace "):
             scope = block.removeprefix("namespace ")
             qualified = ".".join([*scopes, scope])
             if not re.fullmatch(NAME, scope) or not (namespace + ".").startswith(qualified + "."):
                 raise TextOnly(f"unsupported upstream namespace before {name}: {scope[:120]}")
             scopes.append(scope)
-            entries.append((block, None))
+            entries.append((block, None, ""))
         elif OPEN.fullmatch(block) and not {"in", "hiding", "renaming"} & set(block.split()):
-            entries.append((block, None))
+            entries.append((block, None, ""))
         elif (
             decl
             or block in ("module", "noncomputable section")
@@ -159,12 +169,12 @@ def extract_claim(problem_id: str, lean: str, brief: str) -> tuple[str, str]:
         parameters = math_term(binders, "target binders", binders=True)
         proposition = f"∀ {parameters},\n    {proposition}"
 
-    if len(entries) > 256:
+    if len(entries) > 16384:
         raise TextOnly("the upstream declaration context exceeds the import size limit")
     # Only definitions referenced by the target (or another selected definition) are ported.
     references = signature
     preamble = []
-    for block, definition in reversed(entries):
+    for block, definition, prefix in reversed(entries):
         if definition is None:
             preamble.append(block)
             continue
@@ -181,14 +191,14 @@ def extract_claim(problem_id: str, lean: str, brief: str) -> tuple[str, str]:
         type_annotation = f" : ({math_term(type_, f'type of {def_name}')})" if type_ else ""
         value = math_term(value, f"definition {def_name}")
         preamble.append(
-            f"set_option autoImplicit false in\n"
+            f"{prefix}set_option autoImplicit false in\n"
             f"noncomputable {kind} {def_name}{parameters}{type_annotation} := (\n  {value}\n)"
         )
         references += "\n" + rest
 
     preamble.reverse()
     preamble.append(
-        f"set_option autoImplicit false in\n"
+        f"{target_prefix}set_option autoImplicit false in\n"
         f"noncomputable def lemmataLtsTarget : Prop := (\n  {proposition}\n)"
     )
     preamble.extend(f"end {scope}" for scope in reversed(scopes))
