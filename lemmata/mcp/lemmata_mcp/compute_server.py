@@ -4,6 +4,7 @@ server's independent replay, and UNSAT is evidence, never a proof by itself."""
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import time
@@ -17,6 +18,7 @@ from . import board, solvers
 from .cas import Sage
 from .cas import ideal_cofactors as cas_ideal_cofactors
 from .common import HOME, PINS, STATE, run, run_job, sha256, tool_path
+from .jobs import TABLE_MAX_ROWS, check_table_row
 
 sage_worker = Sage()
 GENG_FLAG = re.compile(r"-[a-zA-Z]+|-[dD]\d+|\d+:\d+")
@@ -393,6 +395,141 @@ def sos_certificate(polynomial: str, timeout_s: int = 120, max_basis: int = 120)
     nonnegative polynomial is a sum of squares.
     """
     return solvers.sos_certificate(sage_worker, polynomial, timeout_s, max_basis)
+
+
+# --- certificate tables for kernel checks -------------------------------------------------
+
+LEAN_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+INLINE_CHARS = 60_000  # chunk text returned inline up to this size; larger ones stay on disk
+
+
+def _table_header(name: str, field_bits: list[int]) -> str:
+    """The decoder, the fuel-recursive checker and its soundness lemma for one row layout."""
+    width = sum(field_bits)
+    fields, offset = [], 0
+    for bits in field_bits:
+        fields.append(f"(r >>> {offset}) % 2 ^ {bits}" if offset else f"r % 2 ^ {bits}")
+        offset += bits
+    return f"""\
+-- certificate_table `{name}`: fields {field_bits} bits, row k at bit {width} * k of a chunk.
+def {name}Row (r : ℕ) : List ℕ := [{", ".join(fields)}]
+
+/-- `{name}All chk n i t`: `chk` holds on rows 0..n-1 of `t`, row k with index `i + k`.
+Recursion on the fuel `n` through `Nat.rec`, so the kernel reduces it directly. -/
+noncomputable def {name}All (chk : ℕ → List ℕ → Bool) (n : ℕ) : ℕ → ℕ → Bool :=
+  Nat.rec (motive := fun _ => ℕ → ℕ → Bool) (fun _ _ => true)
+    (fun _ ih i t => chk i ({name}Row t) && ih (i + 1) (t >>> {width})) n
+
+theorem {name}All_sound (chk : ℕ → List ℕ → Bool) (n : ℕ) :
+    ∀ i t, {name}All chk n i t = true →
+      ∀ k < n, chk (i + k) ({name}Row (t >>> ({width} * k))) = true := by
+  induction n with
+  | zero => intro i t _ k hk; omega
+  | succ n ih =>
+    intro i t h k hk
+    have h' : chk i ({name}Row t) = true ∧ {name}All chk n (i + 1) (t >>> {width}) = true :=
+      Bool.and_eq_true_iff.mp h
+    rcases k with _ | k
+    · simpa using h'.1
+    · have := ih (i + 1) (t >>> {width}) h'.2 k (by omega)
+      rwa [← Nat.shiftRight_add, show {width} + {width} * k = {width} * (k + 1) by ring,
+        show i + 1 + k = i + (k + 1) by omega] at this
+"""
+
+
+@server.tool()
+def certificate_table(
+    generator: str,
+    field_bits: list[int],
+    chunk_rows: int = 2000,
+    name: str = "tbl",
+    problem: str | None = None,
+    timeout_s: int = 600,
+) -> dict[str, Any]:
+    """Pack a computed table into Nat literals for a kernel-checked finite check in Lean.
+
+    `generator` is Python defining rows() that yields tuples of non-negative ints, one field
+    per entry of `field_bits` (each value < 2^bits). It runs sandboxed. Rows are split into
+    chunks of `chunk_rows`; each chunk is one hex literal `def <name>_<i> : ℕ`, so the
+    elaborator parses one numeral instead of a huge List. `header` defines `<name>Row`
+    (decoder), `<name>All chk n i t` (fuel recursion via Nat.rec) and `<name>All_sound`
+    (each of rows 0..n-1 satisfies `chk (i + k) row`). Write `chk : ℕ → List ℕ → Bool`,
+    then check each chunk with `template` (`decide +kernel`, never `by decide` or
+    native_decide) and register it; chunk i starts at global row index `base`. Chunk text
+    above 60k characters is saved under ~/.lemmata/state/artifacts/cert only: lower
+    `chunk_rows` to get it inline. Coverage (with `problem`) means the table was generated,
+    not that Lean checked it.
+    """
+    # ponytail: one fixed-width packing; add variable-width/delta encoding past ~10^6 rows
+    if not field_bits or not all(type(b) is int and 0 < b <= 4096 for b in field_bits):
+        raise ValueError("field_bits must be a non-empty list of widths in 1..4096")
+    if chunk_rows < 1:
+        raise ValueError("chunk_rows must be at least 1")
+    if not LEAN_NAME.fullmatch(name):
+        raise ValueError("name must be a plain Lean identifier like tbl")
+    job = {"kind": "table", "generator": generator, "field_bits": field_bits}
+    result = run_job(job, timeout_s)
+    if "rows" not in result:
+        return result
+    rows: list[list[int]] = result.pop("rows")
+    if not isinstance(rows, list) or not 0 < len(rows) <= TABLE_MAX_ROWS:
+        raise ValueError(f"rows() must yield 1..{TABLE_MAX_ROWS} rows")
+    for i in range(len(rows)):  # the sandbox output is untrusted
+        check_table_row(i, rows[i], field_bits)
+    stream = json.dumps(rows, separators=(",", ":"))
+    digest = sha256(stream)
+    key = sha256(f"{digest}|{name}|{field_bits}|{chunk_rows}")
+    directory = STATE / "artifacts" / "cert" / key[:16]
+    directory.mkdir(parents=True, exist_ok=True)
+    header = _table_header(name, field_bits)
+    (directory / "header.lean").write_text(header)
+    width, offsets = sum(field_bits), list(itertools.accumulate(field_bits[:-1], initial=0))
+    chunks = []
+    for start in range(0, len(rows), chunk_rows):  # no enumerate(): the tool shadows it
+        index = start // chunk_rows
+        part = rows[start : start + chunk_rows]
+        packed = 0
+        for row in reversed(part):
+            value = sum(v << off for v, off in zip(row, offsets, strict=True))
+            packed = (packed << width) | value
+        text = (
+            f"def {name}_{index} : ℕ := 0x{packed:x}\ndef {name}_{index}_len : ℕ := {len(part)}\n"
+        )
+        path = directory / f"chunk_{index}.lean"
+        path.write_text((header + "\n" if index == 0 else "") + text)
+        chunk = {
+            "index": index,
+            "base": start,
+            "rows": len(part),
+            "first_key": part[0][0],
+            "last_key": part[-1][0],
+            "path": str(path),
+            "template": f"theorem {name}_{index}_ok : {name}All chk {name}_{index}_len {start} "
+            f"{name}_{index} = true := by decide +kernel",
+        }
+        if len(text) <= INLINE_CHARS:
+            chunk["lean"] = text
+        chunks.append(chunk)
+    result |= {
+        "sha256": digest,
+        "rows": len(rows),
+        "artifact": str(directory),
+        "header": header,
+        "chunks": chunks,
+        "outcome": "no_witness_in_domain",
+    }
+    bounds = {
+        "first_key": rows[0][0],
+        "last_key": rows[-1][0],
+        "rows": len(rows),
+        "checked": False,
+        "field_bits": field_bits,
+        "rows_sha": digest,
+        "generator_sha": sha256(generator),
+    }
+    shard = {"index": 0, "count": 1}
+    _record(problem, None, "certificate_table", result, bounds, shard, [], str(directory))
+    return result
 
 
 # --- v2: candidate sources ------------------------------------------------------------------
