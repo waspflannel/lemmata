@@ -13,10 +13,12 @@ import argparse
 import base64
 import hashlib
 import html
+import os
 import re
 import sys
 import time
 from contextlib import closing
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 from urllib.error import URLError
@@ -71,7 +73,9 @@ def _fetch(path: str, digest: str | None = None) -> bytes:
         raise ValueError(f"{path}: sha256 mismatch")
     if not cached.exists():
         cached.parent.mkdir(parents=True, exist_ok=True)
-        cached.write_bytes(data)
+        tmp = cached.with_name(f"{cached.name}.{os.getpid()}.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, cached)
     return data
 
 
@@ -90,10 +94,15 @@ def _assets() -> str:
     try:
         css = _katex_css()
         scripts = [_fetch(path, digest).decode() for path, digest in SCRIPTS.items()]
-    except (URLError, OSError, ValueError) as e:
+    except (URLError, OSError, ValueError, HTTPException) as e:
         print(f"lemmata-mcp learn: vendoring failed ({e}); linking the CDN", file=sys.stderr)
-        tags = [f'<link rel="stylesheet" href="{CDN}{KATEX_CSS[0]}">']
-        tags += [f'<script src="{CDN}{path}"></script>' for path in SCRIPTS]
+
+        def sri(digest: str) -> str:
+            b64 = base64.b64encode(bytes.fromhex(digest)).decode()
+            return f'integrity="sha256-{b64}" crossorigin="anonymous"'
+
+        tags = [f'<link rel="stylesheet" href="{CDN}{KATEX_CSS[0]}" {sri(KATEX_CSS[1])}>']
+        tags += [f'<script src="{CDN}{p}" {sri(d)}></script>' for p, d in SCRIPTS.items()]
         return "\n".join(tags)
     inline = [f"<style>{css}</style>"]
     inline += [f"<script>{s.replace('</script', '<\\/script')}</script>" for s in scripts]

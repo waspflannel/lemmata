@@ -165,7 +165,9 @@ the goal tree as nested sections, each carrying its status, flag and the Lean so
 lemma that closed, refuted or split it. KaTeX (with its fonts) and marked are fetched once from
 cdnjs at pinned versions, checked against pinned sha256 digests, cached in
 `~/.lemmata/state/learn-vendor` and inlined, so the page opens offline. `learn` also runs on its
-own, without an explanation, for any challenge.
+own, without an explanation, for any challenge. After a run has stopped, the page can be rebuilt by
+hand with `lemmata-mcp learn <id> --explanation <md> --out <html>` (`-Resume` refuses a run that
+ended with a verdict).
 
 ## Math tools (`lemmata/mcp`)
 

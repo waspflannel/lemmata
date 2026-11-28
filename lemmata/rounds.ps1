@@ -374,11 +374,14 @@ function Invoke-Learn([string]$Thread) {
         Write-Log "dry run: would render: lemmata-mcp $($learnArgs -join ' ') --explanation $outWsl/$Name-learn.md"
         return
     }
-    if ($Thread) {
-        # The explanation is short: cap it at one hour, or the round cap if lower.
+    $remaining = ($deadline - (Get-Date)).TotalMilliseconds
+    if ($Thread -and $remaining -le 0) {
+        Write-Log 'learn: time cap used up; the page has no explanation'
+    } elseif ($Thread) {
+        # The explanation is short: cap it at one hour, the round cap or the remaining time.
         Write-Log "learn: forking $Thread for the explanation"
         Remove-Item -LiteralPath $md -ErrorAction SilentlyContinue  # never render a stale one
-        $run = Invoke-Launch $launch $log ([Math]::Min($RoundCapHours, 1) * 3600000)
+        $run = Invoke-Launch $launch $log ([Math]::Min([Math]::Min($RoundCapHours, 1) * 3600000, $remaining))
         Write-Log "learn: exit $($run.exit), killed $($run.killed)"
     } else {
         Write-Log 'learn: no thread to fork; the page has no explanation'
@@ -387,6 +390,8 @@ function Invoke-Learn([string]$Thread) {
     if ($null -ne (Invoke-Mcp $learnArgs)) { Write-Log "Learn page: $base.html" }
     else { Write-Log 'learn: lemmata-mcp learn failed' }
 }
-if ($Learn -and $status -in 'verdict', 'no-progress', 'max-rounds', 'dry-run') { Invoke-Learn $lastThread }
+if ($Learn -and $status -in 'verdict', 'no-progress', 'max-rounds', 'dry-run') {
+    try { Invoke-Learn $lastThread } catch { Write-Log "learn failed: $($_.Exception.Message)" }
+}
 Send-Webhook "$Name-r$lastRound" $status
 if ($status -eq 'failed') { exit 1 }

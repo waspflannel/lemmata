@@ -292,7 +292,7 @@ footer {
 (function () {
   "use strict";
   // Code first, so `$` inside code is left alone; then $$..$$, \[..\], \(..\), $..$.
-  var MATH = /(```[\s\S]*?```|`[^`\n]+`)|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$([^\s$](?:[^$\n]*?[^\s$\\])?)\$/g;
+  var MATH = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]+`)|\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$([^\s$](?:[^$\n]*?[^\s$\\])?)\$/g;
   function esc(s) {
     return s.replace(/[&<>"]/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
@@ -334,9 +334,9 @@ footer {
     var md = pieces(src).map(function (p) {
       if (p[0] != null) return p[0];
       math.push(haveKatex ? tex(p[1], p[2]) : esc(p[2] ? "$$" + p[1] + "$$" : "$" + p[1] + "$"));
-      return "KTXPH" + (math.length - 1) + "Q";
+      return "\uE000" + (math.length - 1) + "\uE001";
     }).join("");
-    return marked.parse(md).replace(/KTXPH(\d+)Q/g, function (_, i) { return math[+i]; });
+    return marked.parse(md).replace(/\uE000(\d+)\uE001/g, function (t, i) { return math[+i] === undefined ? t : math[+i]; });
   }
   if (typeof marked !== "undefined") {
     marked.use({
