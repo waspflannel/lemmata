@@ -3,6 +3,7 @@
 lemmata-mcp lean | library | compute | verdict | whiteboard | lean_lsp
 lemmata-mcp freeze spec.json          freeze a challenge (operator)
 lemmata-mcp lts {search,show,brief,import}  browse Left to Solve and import challenges
+lemmata-mcp triage <id> [--budget-s 120] [--json]  advisory pre-run check (operator)
 lemmata-mcp build-index decls.jsonl   build the declaration index (setup)
 lemmata-mcp smoke [server ...]        start each server over stdio and list its tools
 """
@@ -89,6 +90,10 @@ def main() -> None:
         from .left_to_solve import main as lts_main
 
         lts_main(args[1:])
+    elif command == "triage":
+        from .triage import main as triage_main
+
+        triage_main(args[1:])
     elif command == "build-index" and len(args) == 2:
         from .library_server import build_index
 

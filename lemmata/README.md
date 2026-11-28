@@ -178,6 +178,26 @@ successfully, paste the printed `Work on challenge <id>.` into lemmata. The exis
 `get_challenge` tool returns the cached brief under `left_to_solve` as reference data.
 Problems without a supported Lean translation are recorded in the local catalog cache as
 text-only, with the blocker printed by the CLI.
+Import prints a warning when the catalog marks the problem as solved.
+
+### Triage
+
+Before a run, check whether the problem is worth one:
+
+```sh
+lemmata-mcp triage 2b1a80c7fc262a96            # a challenge id
+lemmata-mcp triage OeisA238281.conjecture_2    # or a Left to Solve problem id
+```
+
+Triage reports the upstream solved status, kind, difficulty and live agents; the accepted
+submissions, lemma, coverage and dead-end counts on this machine; and, when the challenge has
+a frozen predicate, a bounded `enumerate` search (bounds 8, 32, 128 within `--budget-s`,
+default 120) recorded as `triage-enumerate` coverage. It prints a 0–100 score with its
+factors (`already-solved`, `disprove-now` or `scored`) as Markdown, or JSON with `--json`, and
+saves the report to `~/.lemmata/state/triage/<id>.json`. The output is advisory only: triage
+never submits a verdict. A witness it finds and replays is a DISPROVED candidate that a worker
+must still certify through `submit_verdict` or a Lean `claim_neg`. Triage is an operator
+command, not an MCP tool, so workers never see its score.
 
 ### Servers
 
